@@ -243,31 +243,37 @@ def build_tiddlers(an: Analyzer, loc: Loc, level: str) -> list[tuple[str, list[s
 # ------------------------------------------------------------------ TiddlyWiki render
 
 def tw_render(tid_dir: Path, loc: Loc) -> dict[str, str]:
-    """Вызывает TiddlyWiki headless: load tid -> render each to output.html -> read.
+    """Вызывает TiddlyWiki headless: load .tid -> --render каждого тисса в свой HTML -> читает.
 
     Возвращает {title: rendered_html}. Это «склейка» двух проектов: описание
-    формируется средствами TiddlyWiki5 (движок рендера), а контент — анализатором.
+    формируется средствами TiddlyWiki5 (движок рендера WikiText), а контент —
+    анализатором (подход doxygen). Рендер идёт по документации TiddlyWiki5:
+    команда `--render <фильтр> <имя-файла-фильтр> <тип>`, где имя файла берётся
+    из поля `filename` тисса (adaptor `fs` пишет каждый тисс отдельным файлом).
     """
     wiki_dir = Path(tempfile.mkdtemp(prefix="tw-describe-"))
+    out_dir = wiki_dir / "out"
     try:
         (wiki_dir / "tiddlers").mkdir()
         shutil.copytree(tid_dir, wiki_dir / "tiddlers", dirs_exist_ok=True)
-        cmd = ["node", TW_JS, str(wiki_dir),
+        out_dir.mkdir()
+        cmd = ["node", TW_JS,
+               "+filesystem", "+tiddlyweb",          # серверные адапторы (headless CLI)
+               str(wiki_dir),
                "--load", "tiddlers/",
-               "--render", "[!is[system]]", "output.html", "$:/core/templates/static-page.template"]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        out_file = wiki_dir / "output.html"
+               "--render", "[!is[system]]",
+               "[enlist:file.\\' 'index[]removesuffix[ ]addsuffix[.html]]",
+               "text/html"]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=str(out_dir))
         results: dict[str, str] = {}
-        if out_file.exists():
-            raw = out_file.read_text(encoding="utf8", errors="replace")
-            # один файл на тисс: разделители
-            chunks = re.split(r"\n<!--TIDDELOR-SPLIT-->\n", raw)
-            for ch in chunks:
-                m = re.search(r"<h1[^>]*>(.*?)</h1>", ch, re.S)
-                title = html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip() if m else ""
-                results[title] = ch
-        if res.returncode != 0 and not results:
-            raise RuntimeError(res.stderr[-800:])
+        for hf in sorted(out_dir.glob("*.html")):
+            content = hf.read_text(encoding="utf8", errors="replace")
+            # заголовок первого уровня — название тисса
+            m = re.search(r"<h1[^>]*>(.*?)</h1>", content, re.S)
+            title = html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip() if m else hf.stem
+            results[title] = content
+        if not results:
+            raise RuntimeError((res.stderr or res.stdout)[-800:] or "no rendered files")
         return results
     finally:
         shutil.rmtree(wiki_dir, ignore_errors=True)
@@ -329,8 +335,9 @@ def generate(repo_path: Path, out_dir: Path, level: str = "high",
     tid_dir = out_dir / ".tiddlers"
     tid_dir.mkdir(parents=True, exist_ok=True)
     for title, tags, body in tiddlers:
-        (tid_dir / (safe_filename(title) + ".tid")).write_text(
-            make_tid(title, tags, body), encoding="utf8")
+        fn = safe_filename(title)
+        (tid_dir / (fn + ".tid")).write_text(
+            make_tid(title, tags, body, extra={"filename": fn}), encoding="utf8")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     written = 0
