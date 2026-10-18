@@ -1,0 +1,12 @@
+{
+	"title": "$:/plugins/tiddlywiki/project-describer",
+	"name": "Project Describer",
+	"description": "Полное описание проекта по анализу всех файлов и структур (интеграция TiddlyWiki5 + Doxygen)",
+	"author": "Project Describer",
+	"core-version": ">=5.0.0",
+	"type": "plugin",
+	"plugin-type": "plugin",
+	"list": "readme",
+	"dependents": ["$:/plugins/tiddlywiki/filesystem"],
+	"stability": "STABILITY_2_STABLE"
+}

@@ -1,0 +1,21 @@
+title: $:/plugins/tiddlywiki/project-describer/readme
+tags: $:/tags/PluginReadme
+
+!! Project Describer
+
+Плагин объединяет два проекта в один рабочий инструмент:
+
+* ''TiddlyWiki5'' даёт интерактивный интерфейс (кнопка «Получить полное описание»);
+* ''Doxygen'' — методологию анализа исходников (структура, комментарии \brief/\class, CMake-модули).
+
+При нажатии кнопки плагин сканирует '''все файлы и структуры репозитория''' и создаёт тиддлер
+<<ProjectDescription>> с детальным Markdown-отчётом. Отчёт также сохраняется в файл
+PROJECT_DESCRIPTION.md и доступен для скачивания.
+
+Использование из командной строки:
+
+```
+node ./tiddlywiki.js ./editions/describer --verbose --describeproj --output PROJECT_DESCRIPTION.md
+```
+
+Либо просто: `node tools/project-describer/cli.js`
