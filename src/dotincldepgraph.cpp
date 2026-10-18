@@ -1,0 +1,231 @@
+/******************************************************************************
+*
+* Copyright (C) 1997-2019 by Dimitri van Heesch.
+*
+* Permission to use, copy, modify, and distribute this software and its
+* documentation under the terms of the GNU General Public License is hereby
+* granted. No representations are made about the suitability of this software
+* for any purpose. It is provided "as is" without express or implied warranty.
+* See the GNU General Public License for more details.
+*
+* Documents produced by Doxygen are derivative works derived from the
+* input used in their production; they are not affected by this license.
+*
+*/
+
+// own header
+#include "dotincldepgraph.h"
+
+// other includes
+#include "config.h"
+#include "dotnode.h"
+#include "filedef.h"
+#include "textstream.h"
+#include "util.h"
+
+void DotInclDepGraph::buildGraph(DotNode *n,const FileDef *fd,int distance)
+{
+  const IncludeInfoList &includeFiles = m_inverse ? fd->includedByFileList() : fd->includeFileList();
+  for (const auto &ii : includeFiles)
+  {
+    const FileDef *bfd = ii.fileDef;
+    DString in = ii.includeName;
+    //printf(">>>> in='%s' bfd=%p\n",qPrint(ii->includeName),bfd);
+    bool doc=true,src=false;
+    if (bfd)
+    {
+      in  = bfd->absFilePath();
+      doc = bfd->isLinkable() && !bfd->isHidden();
+      src = bfd->generateSourceFile();
+    }
+    if (doc || src || !Config_getBool(HIDE_UNDOC_RELATIONS))
+    {
+      DString url="";
+      if (bfd) url=bfd->getOutputFileBase();
+      if (!doc && src)
+      {
+        url=bfd->getSourceFileBase();
+      }
+      auto it = m_usedNodes.find(in.str());
+      if (it!=m_usedNodes.end()) // file is already a node in the graph
+      {
+        DotNode *bn = it->second;
+        n->addChild(bn,EdgeInfo::Blue,EdgeInfo::Solid);
+        bn->addParent(n);
+        bn->setDistance(distance);
+      }
+      else
+      {
+        DString tmp_url;
+        DString tooltip;
+        if (bfd)
+        {
+          tmp_url=doc || src ? bfd->getReference()+"$"+url : DString();
+          tooltip = bfd->briefDescriptionAsTooltip();
+        }
+        DotNode *bn = new DotNode(this,
+                         ii.includeName,   // label
+                         tooltip,           // tip
+                         tmp_url,           // url
+                         false,             // rootNode
+                         nullptr);                // cd
+        n->addChild(bn,EdgeInfo::Blue,EdgeInfo::Solid);
+        bn->addParent(n);
+        m_usedNodes.emplace(in.str(),bn);
+        bn->setDistance(distance);
+
+        if (bfd) buildGraph(bn,bfd,distance+1);
+      }
+    }
+  }
+}
+
+void DotInclDepGraph::determineVisibleNodes(DotNodeDeque &queue, int &maxNodes)
+{
+  while (!queue.empty() && maxNodes>0)
+  {
+    DotNode *n = queue.front();
+    queue.pop_front();
+    if (!n->isVisible() && n->distance()<=Config_getInt(MAX_DOT_GRAPH_DEPTH)) // not yet processed
+    {
+      n->markAsVisible();
+      maxNodes--;
+      // add direct children
+      for (const auto &dn : n->children())
+      {
+        queue.push_back(dn);
+      }
+    }
+  }
+}
+
+void DotInclDepGraph::determineTruncatedNodes(DotNodeDeque &queue)
+{
+  while (!queue.empty())
+  {
+    DotNode *n = queue.front();
+    queue.pop_front();
+    if (n->isVisible() && n->isTruncated()==DotNode::Unknown)
+    {
+      bool truncated = false;
+      for (const auto &dn : n->children())
+      {
+        if (!dn->isVisible())
+        {
+          truncated = true;
+        }
+        else
+        {
+          queue.push_back(dn);
+        }
+      }
+      n->markAsTruncated(truncated);
+    }
+  }
+}
+
+DotInclDepGraph::DotInclDepGraph(const FileDef *fd,bool inverse)
+{
+  m_inverse = inverse;
+  ASSERT(fd!=nullptr);
+  m_inclDepFileName   = fd->includeDependencyGraphFileName();
+  m_inclByDepFileName = fd->includedByDependencyGraphFileName();
+  DString tmp_url=fd->getReference()+"$"+fd->getOutputFileBase();
+  DString tooltip = fd->briefDescriptionAsTooltip();
+  m_startNode = new DotNode(this,
+                            fd->docName(),
+                            tooltip,
+                            tmp_url,
+                            true);    // root node
+  m_startNode->setDistance(0);
+  m_usedNodes.emplace(fd->absFilePath().str(),m_startNode);
+  buildGraph(m_startNode,fd,1);
+
+  int maxNodes = Config_getInt(DOT_GRAPH_MAX_NODES);
+  DotNodeDeque openNodeQueue;
+  openNodeQueue.push_back(m_startNode);
+  determineVisibleNodes(openNodeQueue,maxNodes);
+  openNodeQueue.clear();
+  openNodeQueue.push_back(m_startNode);
+  determineTruncatedNodes(openNodeQueue);
+}
+
+DotInclDepGraph::~DotInclDepGraph()
+{
+  DotNode::deleteNodes(m_startNode);
+}
+
+DString DotInclDepGraph::getBaseName() const
+{
+  if (m_inverse)
+  {
+    return m_inclByDepFileName;
+  }
+  else
+  {
+    return m_inclDepFileName;
+  }
+}
+
+void DotInclDepGraph::computeTheGraph()
+{
+  computeGraph(m_startNode, GraphType::Dependency, m_graphFormat, "", false,
+               m_inverse, m_startNode->label(), m_theGraph);
+}
+
+DString DotInclDepGraph::getMapLabel() const
+{
+  if (m_inverse)
+  {
+    return escapeCharsInString(m_startNode->label(),false) + "dep";
+  }
+  else
+  {
+    return escapeCharsInString(m_startNode->label(),false);
+  }
+}
+
+DString DotInclDepGraph::writeGraph(TextStream &out,
+                                     GraphOutputFormat graphFormat,
+                                     EmbeddedOutputFormat textFormat,
+                                     const DString &path,
+                                     const DString &fileName,
+                                     const DString &relPath,
+                                     bool generateImageMap,
+                                     int graphId)
+{
+  m_doNotAddImageToIndex = textFormat!=EmbeddedOutputFormat::Html;
+
+  return DotGraph::writeGraph(out, graphFormat, textFormat, path, fileName, relPath, generateImageMap, graphId);
+}
+
+bool DotInclDepGraph::isTrivial() const
+{
+  return m_startNode->children().empty();
+}
+
+bool DotInclDepGraph::isTooBig() const
+{
+  return numNodes()>=Config_getInt(DOT_GRAPH_MAX_NODES);
+}
+
+int DotInclDepGraph::numNodes() const
+{
+  return static_cast<int>(m_startNode->children().size());
+}
+
+void DotInclDepGraph::writeXML(TextStream &t)
+{
+  for (const auto &[name,node] : m_usedNodes)
+  {
+    node->writeXML(t,false);
+  }
+}
+
+void DotInclDepGraph::writeDocbook(TextStream &t)
+{
+  for (const auto &[name,node] : m_usedNodes)
+  {
+    node->writeDocbook(t,false);
+  }
+}

@@ -1,0 +1,7 @@
+title: $:/language/Snippets/FunctionDefinition
+tags: $:/tags/TextEditor/Snippet
+caption: Function definition
+
+\function f.nom(param1,param2:"valorPerOmissio") [<param1>!is[blank]else<param2>]
+
+<<f.nom>>

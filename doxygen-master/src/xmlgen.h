@@ -1,0 +1,74 @@
+/******************************************************************************
+ *
+ * Copyright (C) 1997-2026 by Dimitri van Heesch.
+ *
+ * Permission to use, copy, modify, and distribute this software and its
+ * documentation under the terms of the GNU General Public License is hereby
+ * granted. No representations are made about the suitability of this software
+ * for any purpose. It is provided "as is" without express or implied warranty.
+ * See the GNU General Public License for more details.
+ *
+ * Documents produced by Doxygen are derivative works derived from the
+ * input used in their production; they are not affected by this license.
+ *
+ */
+
+
+#ifndef XMLGEN_H
+#define XMLGEN_H
+
+#include "outputgen.h"
+
+class TextStream;
+
+class XMLCodeGenerator final : public OutputCodeIntf
+{
+  public:
+    XMLCodeGenerator(TextStream *t);
+
+    OutputType type() const override { return OutputType::XML; }
+
+    void codify(const DString &text) override;
+    void stripCodeComments(bool b) override;
+    void startSpecialComment() override;
+    void endSpecialComment() override;
+    void setStripIndentAmount(size_t amount) override;
+    std::unique_ptr<OutputCodeIntf> clone() override { return std::make_unique<XMLCodeGenerator>(*this); }
+    void writeCodeLink(CodeSymbolType type,
+                       const DString &ref,const DString &file,
+                       const DString &anchor,const DString &name,
+                       const DString &tooltip) override;
+    void writeTooltip(const DString &, const DocLinkInfo &, const DString &,
+                      const DString &, const SourceLinkInfo &, const SourceLinkInfo &
+                     ) override;
+    void startCodeLine(int) override;
+    void endCodeLine() override;
+    void startFontClass(const DString &colorClass) override;
+    void endFontClass() override;
+    void writeCodeAnchor(const DString &) override;
+    void writeLineNumber(const DString &extRef,const DString &compId,
+                         const DString &anchorId,int l,bool writeLineAnchor) override;
+    void startCodeFragment(const DString &) override;
+    void endCodeFragment(const DString &) override;
+    void startFold(int,const DString &,const DString &) override {}
+    void endFold() override {}
+
+  private:
+    TextStream *m_t;
+    DString m_refId;
+    DString m_external;
+    int m_lineNumber = -1;
+    bool m_isMemberRef = false;
+    size_t m_col = 0;
+
+    bool m_insideCodeLine = false;
+    bool m_normalHLNeedStartTag = true;
+    bool m_insideSpecialHL = false;
+    bool m_stripCodeComments = false;
+    bool m_hide = false;
+    size_t  m_stripIndentAmount = 0;
+};
+
+void generateXML();
+
+#endif

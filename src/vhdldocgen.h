@@ -1,0 +1,315 @@
+/******************************************************************************
+ *
+ * Copyright (C) 1997-2015 by Dimitri van Heesch.
+ *
+ * Permission to use, copy, modify, and distribute this software and its
+ * documentation under the terms of the GNU General Public License is hereby
+ * granted. No representations are made about the suitability of this software
+ * for any purpose. It is provided "as is" without express or implied warranty.
+ * See the GNU General Public License for more details.
+ *
+ * Documents produced by Doxygen are derivative works derived from the
+ * input used in their production; they are not affected by this license.
+ *
+ */
+
+#ifndef VHDLDOCGEN_H
+#define VHDLDOCGEN_H
+
+/**
+ * This class implements functions for parsing and generating
+ * vhdl documents
+ */
+
+#include "dstring.h"
+#include "entry.h"
+
+class ClassDef;
+class Definition;
+class Entry;
+class FileDef;
+class GroupDef;
+class MemberDef;
+class MemberDefMutable;
+class MemberList;
+class ModuleDef;
+class NamespaceDef;
+class OutputList;
+class TextStream;
+
+struct VhdlConfNode
+{
+  VhdlConfNode(const DString &a,const DString &b,const DString &config,const DString &cs,bool leaf)
+  {
+    arch=a;              // architecture  e.g. for iobuffer
+    arch=arch.lower();
+    binding=b;           // binding e.g.  use entity work.xxx(bev)
+    binding=binding.lower();
+    confVhdl=config;     // configuration foo is bar
+    compSpec=cs;
+    isInlineConf=false;  // primary configuration?
+    isLeaf=leaf;
+  }
+
+  DString confVhdl;
+  DString arch;
+  DString binding;
+  DString compSpec;
+  int level = 0;
+  bool isLeaf = false;
+  bool isInlineConf = false;
+
+};
+
+
+/** Class for generating documentation specific for VHDL */
+class VhdlDocGen
+{
+  public:
+
+    enum VhdlClasses       // Overlays: Protection
+    {
+      ENTITYCLASS,         // Overlays: Public
+      PACKBODYCLASS,       // Overlays: Protected
+      ARCHITECTURECLASS,   // Overlays: Private
+      PACKAGECLASS         // Overlays: Package
+    };
+    static VhdlClasses convert(Protection prot)
+    {
+      switch (prot)
+      {
+        case Protection::Public:    return ENTITYCLASS;
+        case Protection::Protected: return PACKBODYCLASS;
+        case Protection::Private:   return ARCHITECTURECLASS;
+        case Protection::Package:   return PACKAGECLASS;
+      }
+      return ENTITYCLASS;
+    }
+
+    static void init();
+    static DString convertFileNameToClassName(const DString &name);
+    // --- used by vhdlscanner.l -----------
+
+    static bool isSubClass(ClassDef* cd,ClassDef *scd, bool followInstances,int level);
+
+    static DString getIndexWord(const DString &,int index);
+    static bool     deleteCharRev(DString &s,char c);
+    static void     deleteAllChars(DString &s,char c);
+    static void     parseFuncProto(const DString &text,
+                                   DString& name,
+                                   DString& ret,
+                                   bool doc=false);
+    // -----------------------------------
+
+    static void computeVhdlComponentRelations();
+
+    static const char* findKeyWord(const DString& word);
+
+    static ClassDef* getPackageName(const DString& name);
+    static const MemberDef* findMember(const DString& className,
+                                 const DString& memName);
+    static void findAllPackages(ClassDef*);
+    static const MemberDef* findMemberDef(ClassDef* cd,
+                                const DString& key,
+                                MemberListType type);
+    static ClassDef *getClass(const DString &name);
+    static const MemberDef* findFunction(const DString& name,
+                                   const DString& package);
+    static DString getClassTitle(const ClassDef*);
+    static void writeInlineClassLink(const ClassDef*,
+                                     OutputList &ol);
+    static void writeTagFile(MemberDefMutable *mdef,TextStream &tagFile);
+
+    static bool isConstraint(const MemberDef *mdef);
+    static bool isConfig(const MemberDef *mdef);
+    static bool isAlias(const MemberDef *mdef);
+    static bool isLibrary(const MemberDef *mdef);
+    static bool isGeneric(const MemberDef *mdef);
+    static bool isPort(const MemberDef *mdef);
+    static bool isComponent(const MemberDef *mdef);
+    static bool isPackage(const MemberDef *mdef);
+    static bool isEntity(const MemberDef *mdef);
+    static bool isConstant(const MemberDef *mdef);
+    static bool isVType(const MemberDef *mdef);
+    static bool isSubType(const MemberDef *mdef);
+    static bool isVhdlFunction(const MemberDef *mdef);
+    static bool isProcess(const MemberDef *mdef);
+    static bool isSignal(const MemberDef *mdef);
+    static bool isAttribute(const MemberDef *mdef);
+    static bool isSignals(const MemberDef *mdef);
+    static bool isProcedure(const MemberDef *mdef);
+    static bool isRecord(const MemberDef *mdef);
+    static bool isArchitecture(const MemberDef *mdef);
+    static bool isUnit(const MemberDef *mdef);
+    static bool isPackageBody(const MemberDef *mdef);
+    static bool isVariable(const MemberDef *mdef);
+    static bool isFile(const MemberDef *mdef);
+    static bool isGroup(const MemberDef *mdef);
+    static bool isCompInst(const MemberDef *mdef);
+    static bool isMisc(const MemberDef *mdef);
+
+    //-----------------------------------------------------
+
+    static void prepareComment(DString&);
+    static void formatString(const DString&,OutputList& ol,const MemberDef*);
+
+    static void writeFormatString(const DString&,OutputList& ol,const MemberDef*);
+    static void writeFunctionProto(OutputList& ol,const ArgumentList &al,const MemberDef*);
+    static void writeProcessProto(OutputList& ol,const ArgumentList &al,const MemberDef*);
+    static void writeProcedureProto(OutputList& ol, const ArgumentList &al,const MemberDef*);
+    static bool writeFuncProcDocu(const MemberDef *mdef, OutputList& ol,const ArgumentList &al,bool type=false);
+    static void writeRecordProto(const MemberDef *mdef, OutputList& ol,const ArgumentList &al);
+
+    static bool writeVHDLTypeDocumentation(const MemberDef* mdef, const Definition* d, OutputList &ol);
+
+    static void writeVhdlDeclarations(const MemberList*,OutputList&,const GroupDef*,const ClassDef*,const FileDef*,const NamespaceDef*,const ModuleDef *);
+
+    static void writeVHDLDeclaration(MemberDefMutable* mdef,OutputList &ol,
+        const ClassDef *cd,const NamespaceDef *nd,const FileDef *fd,const GroupDef *gd,const ModuleDef *mod,
+        bool inGroup);
+
+    static void writePlainVHDLDeclarations(const MemberList* ml,OutputList &ol,
+        const ClassDef *cd,const NamespaceDef *nd,const FileDef *fd,const GroupDef *gd,const ModuleDef *mod,
+        VhdlSpecifier specifier);
+
+    static void writeVHDLDeclarations(const MemberList* ml,OutputList &ol,
+        const ClassDef *cd,const NamespaceDef *nd,const FileDef *fd,const GroupDef *gd,const ModuleDef *mod,
+        const DString &title,const DString &subtitle,bool showEnumValues,VhdlSpecifier type);
+
+    static bool writeClassType(const ClassDef *,OutputList &ol ,DString & cname);
+
+    static DString convertArgumentListToString(const ArgumentList &al,bool f);
+    static DString getProcessNumber();
+    static DString getRecordNumber();
+
+    static DString getClassName(const ClassDef*);
+    static bool isNumber(const std::string& s);
+    static DString getProtectionName(int prot);
+
+    static void parseUCF(const DString &input,Entry* entity,const DString &f,bool vendor);
+
+    static const ClassDef*  findArchitecture(const ClassDef *cd);
+
+    static void correctMemberProperties(MemberDefMutable *md);
+
+    static void writeSource(const MemberDef *mdef,OutputList& ol,const DString & cname);
+
+    static DString  parseForConfig(DString & entity,DString & arch);
+    static DString  parseForBinding(DString & entity,DString & arch);
+    static void addBaseClass(ClassDef* cd,ClassDef *ent);
+    static ClassDef* findVhdlClass(const DString &className );
+
+ // flowcharts
+    static void createFlowChart(const MemberDef*);
+    //static void addFlowImage(const TextStream &,const DString &);
+
+    static void setFlowMember( const MemberDef *flowMember);
+    static const MemberDef *getFlowMember();
+
+    static  bool isVhdlClass (const Entry *cu)
+    {
+      return cu->vhdlSpec==VhdlSpecifier::ENTITY       ||
+             cu->vhdlSpec==VhdlSpecifier::PACKAGE      ||
+             cu->vhdlSpec==VhdlSpecifier::ARCHITECTURE ||
+             cu->vhdlSpec==VhdlSpecifier::PACKAGE_BODY;
+    }
+
+  static void resetCodeVhdlParserState();
+
+  private:
+    static void findAllArchitectures(std::vector<DString>& ql,const ClassDef *cd);
+    static bool compareArgList(const ArgumentList &,const ArgumentList &);
+    static void writeVhdlLink(const ClassDef* cdd ,OutputList& ol,DString& type,DString& name,DString& beh);
+    static void writeStringLink(const MemberDef *mdef,DString mem,OutputList& ol);
+    static void writeRecUnitDocu( const MemberDef *md, OutputList& ol,DString largs);
+    static void  writeRecordUnit(DString & largs,DString & ltype,OutputList& ol,MemberDefMutable *mdef);
+};
+
+//-------------------------------------------------------------------------------------------------------------------
+//-------------- VHDL Flowcharts -------------------------------------------------------------------------------
+//-------------------------------------------------------------------------------------------------------------------
+
+
+//#define DEBUGFLOW
+
+class FlowChart
+{
+  public:
+    enum nodeTypes {
+      IF_NO        = 1<<1,
+      ELSIF_NO     = 1<<2,
+      ELSE_NO      = 1<<3,
+      CASE_NO      = 1<<4,
+      WHEN_NO      = 1<<5,
+      EXIT_NO      = 1<<6,
+      END_NO       = 1<<7,
+      TEXT_NO      = 1<<8,
+      START_NO     = 1<<9,
+      ENDIF_NO     = 1<<10,
+      FOR_NO       = 1<<11,
+      WHILE_NO     = 1<<12,
+      END_LOOP     = 1<<13,
+      END_CASE     = 1<<14,
+      VARIABLE_NO  = 1<<15,
+      RETURN_NO    = 1<<16,
+      LOOP_NO      = 1<<17,
+      NEXT_NO      = 1<<18,
+      EMPTY_NO     = 1<<19,
+      COMMENT_NO   = 1<<20,
+      BEGIN_NO     = 1<<21
+    };
+
+    //---------- create svg -------------------------------------------------------------
+    static void createSVG();
+    static void startDot(TextStream &t);
+    static void endDot(TextStream &t);
+    static void codify(TextStream &t,const DString &str);
+    static void writeShape(TextStream &t,const FlowChart &fl);
+    static void writeEdge(TextStream &t,int fl_from,int fl_to,int i,bool bFrom=false,bool bTo=false);
+    static void writeEdge(TextStream &t,const FlowChart &fl_from,const FlowChart &fl_to,int i);
+    static void writeFlowLinks(TextStream &t);
+
+    static DString getNodeName(int n);
+    static void colTextNodes();
+
+    static size_t getNextIfLink(const FlowChart&,size_t);
+    static size_t getNextNode(size_t index,int stamp);
+    static size_t findNode(size_t index,int stamp,int type);
+    static size_t findNode(size_t index,int type);
+    static size_t findNextLoop(size_t j,int stamp);
+    static size_t findPrevLoop(size_t j,int stamp,bool endif=false);
+    static size_t findLabel(size_t j,const DString &);
+    static void delFlowList();
+    static const char* getNodeType(int c);
+
+    static void addFlowChart(int type,const DString &text,const DString &exp,const DString &label=DString());
+    static void moveToPrevLevel();
+    static int getTimeStamp();
+    static void writeFlowChart();
+    static void alignFuncProc(DString & q,const ArgumentList &al,bool isFunc);
+    static DString convertNameToFileName();
+    static void printNode(const FlowChart& n);
+    static void printFlowTree();
+    static void buildCommentNodes(TextStream &t);
+    static void alignCommentNode(TextStream &t,DString com);
+
+    static void  printUmlTree();
+    static DString printPlantUmlNode(const FlowChart &flo,bool,bool);
+
+    FlowChart(int typ,const DString &t,const DString &ex,const DString &label=DString());
+
+private:
+    int id = 0;
+    int stamp = 0;
+    int type = 0;
+
+    int line = 0;
+
+    DString label;
+    DString text;
+    DString exp;
+};
+
+extern std::vector<FlowChart> flowList;
+
+#endif

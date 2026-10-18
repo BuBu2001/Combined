@@ -1,0 +1,1507 @@
+/******************************************************************************
+ *
+ * Copyright (C) 1997-2022 by Dimitri van Heesch.
+ *
+ * Permission to use, copy, modify, and distribute this software and its
+ * documentation under the terms of the GNU General Public License is hereby
+ * granted. No representations are made about the suitability of this software
+ * for any purpose. It is provided "as is" without express or implied warranty.
+ * See the GNU General Public License for more details.
+ *
+ * Documents produced by Doxygen are derivative works derived from the
+ * input used in their production; they are not affected by this license.
+ *
+ */
+
+#ifndef DOCNODE_H
+#define DOCNODE_H
+
+#include <cstdint>
+#include <cstdio>
+#include <memory>
+#include <type_traits>
+#include <variant>
+#include <vector>
+
+#include "dstring.h"
+#include "docparser.h"
+#include "htmlattrib.h"
+#include "htmlentity.h"
+#include "growvector.h"
+#include "section.h"
+#include "construct.h"
+#include "doctokenizer.h"
+#include "cite.h"
+
+class MemberDef;
+class Definition;
+class DocParser;
+
+//---------------------------------------------------------------------------
+
+#define DOC_NODES                                                                                                                                      \
+/*  0 */  DN(DocWord)           DN_SEP DN(DocLinkedWord)    DN_SEP DN(DocURL)            DN_SEP DN(DocLineBreak)    DN_SEP DN(DocHorRuler)    DN_SEP   \
+/*  5 */  DN(DocAnchor)         DN_SEP DN(DocCite)          DN_SEP DN(DocStyleChange)    DN_SEP DN(DocSymbol)       DN_SEP DN(DocEmoji)       DN_SEP   \
+/* 10 */  DN(DocWhiteSpace)     DN_SEP DN(DocSeparator)     DN_SEP DN(DocVerbatim)       DN_SEP DN(DocInclude)      DN_SEP DN(DocIncOperator) DN_SEP   \
+/* 15 */  DN(DocFormula)        DN_SEP DN(DocIndexEntry)    DN_SEP DN(DocAutoList)       DN_SEP DN(DocAutoListItem) DN_SEP DN(DocTitle)       DN_SEP   \
+/* 20 */  DN(DocXRefItem)       DN_SEP DN(DocImage)         DN_SEP DN(DocDotFile)        DN_SEP DN(DocMscFile)      DN_SEP DN(DocDiaFile)     DN_SEP   \
+/* 25 */  DN(DocVhdlFlow)       DN_SEP DN(DocLink)          DN_SEP DN(DocRef)            DN_SEP DN(DocInternalRef)  DN_SEP DN(DocHRef)        DN_SEP   \
+/* 30 */  DN(DocHtmlHeader)     DN_SEP DN(DocHtmlDescTitle) DN_SEP DN(DocHtmlDescList)   DN_SEP DN(DocSection)      DN_SEP DN(DocSecRefItem)  DN_SEP   \
+/* 35 */  DN(DocSecRefList)     DN_SEP DN(DocInternal)      DN_SEP DN(DocParBlock)       DN_SEP DN(DocSimpleList)   DN_SEP DN(DocHtmlList)    DN_SEP   \
+/* 40 */  DN(DocSimpleSect)     DN_SEP DN(DocSimpleSectSep) DN_SEP DN(DocParamSect)      DN_SEP DN(DocPara)         DN_SEP DN(DocParamList)   DN_SEP   \
+/* 45 */  DN(DocSimpleListItem) DN_SEP DN(DocHtmlListItem)  DN_SEP DN(DocHtmlDescData)   DN_SEP DN(DocHtmlCell)     DN_SEP DN(DocHtmlCaption) DN_SEP   \
+/* 50 */  DN(DocHtmlRow)        DN_SEP DN(DocHtmlTable)     DN_SEP DN(DocHtmlBlockQuote) DN_SEP DN(DocText)         DN_SEP DN(DocRoot)        DN_SEP   \
+/* 55 */  DN(DocHtmlDetails)    DN_SEP DN(DocHtmlSummary)   DN_SEP DN(DocPlantUmlFile)   DN_SEP DN(DocMermaidFile)                                                                      \
+
+// forward declarations
+#define DN(x) class x;
+#define DN_SEP
+DOC_NODES
+#undef DN
+#undef DN_SEP
+
+// define a variant type
+#define DN(x) x
+#define DN_SEP ,
+using DocNodeVariant = std::variant<
+DOC_NODES
+>;
+#undef DN
+#undef DN_SEP
+
+// getter functions to return the name of a doc node type
+#define DN(x) constexpr const char *docNodeName(const x &/* n */) { return #x; }
+#define DN_SEP
+DOC_NODES
+#undef DN
+#undef DN_SEP
+
+/** Abstract node interface with type information. */
+class DocNode
+{
+  public:
+    /*! Creates a new node */
+    DocNode(DocParser *parser,DocNodeVariant *parent) : m_parser(parser), m_parent(parent) {}
+   ~DocNode() = default;
+    ONLY_DEFAULT_MOVABLE(DocNode)
+
+    /*! Returns the parent of this node or nullptr for the root node. */
+    DocNodeVariant *parent() { return m_parent; }
+    const DocNodeVariant *parent() const { return m_parent; }
+
+    DocNodeVariant *thisVariant() { return m_thisVariant; }
+    const DocNodeVariant *thisVariant() const { return m_thisVariant; }
+
+    void setThisVariant(DocNodeVariant *thisVariant) { m_thisVariant=thisVariant; }
+
+    DocParser *parser() { return m_parser; }
+    const DocParser *parser() const { return m_parser; }
+
+    /*! Sets a new parent for this node. */
+    void setParent(DocNodeVariant *parent) { m_parent = parent; }
+
+    /*! Returns true iff this node is inside a preformatted section */
+    bool isPreformatted() const { return m_insidePre; }
+
+  protected:
+    /*! Sets whether or not this item is inside a preformatted section */
+    void setInsidePreformatted(bool p) { m_insidePre = p; }
+    enum RefType { Unknown, Anchor, Section, Table, Requirement };
+  private:
+    bool m_insidePre = false;
+    DocParser *m_parser;
+    DocNodeVariant *m_parent;
+    DocNodeVariant *m_thisVariant = nullptr;
+};
+
+class DocNodeList final : public GrowVector<DocNodeVariant>
+{
+  public:
+    /** Append a new DocNodeVariant to the list by constructing it with type T and
+     *  parameters Args.
+     */
+    template<class T,class...Args>
+    void append(Args&&... args);
+
+    /** moves the element of list \a l at the end of this list.
+     * List \a l will become empty. */
+    void move_append(DocNodeList &l);
+
+    /** Returns a pointer to the last element in the list if that element exists and
+     *  holds a T, otherwise nullptr is returned.
+     */
+    template<class T>
+    T *get_last();
+};
+
+/** Base class for nodes with children */
+class DocCompoundNode : public DocNode
+{
+  public:
+    DocCompoundNode(DocParser *parser,DocNodeVariant *parent)
+      : DocNode(parser,parent) {}
+    DocNodeList &children()             { return m_children; }
+    const DocNodeList &children() const { return m_children; }
+
+  private:
+    DocNodeList m_children;
+};
+
+/** Node representing a word
+ */
+class DocWord final : public DocNode
+{
+  public:
+    DocWord(DocParser *parser,DocNodeVariant *parent,const DString &word);
+    DString word() const { return m_word; }
+
+  private:
+    DString  m_word;
+};
+
+/** Node representing a word that can be linked to something
+ */
+class DocLinkedWord final : public DocNode
+{
+  public:
+    DocLinkedWord(DocParser *parser,DocNodeVariant *parent,const DString &word,
+                  const DString &ref,const DString &file,
+                  const DString &anchor,const DString &tooltip);
+    DString word() const       { return m_word; }
+    DString file() const       { return m_file; }
+    DString relPath() const    { return m_relPath; }
+    DString ref() const        { return m_ref; }
+    DString anchor() const     { return m_anchor; }
+    DString tooltip() const    { return m_tooltip; }
+
+  private:
+    DString  m_word;
+    DString  m_ref;
+    DString  m_file;
+    DString  m_relPath;
+    DString  m_anchor;
+    DString  m_tooltip;
+};
+
+/** Node representing a URL (or email address) */
+class DocURL final : public DocNode
+{
+  public:
+    DocURL(DocParser *parser,DocNodeVariant *parent,const DString &url,bool isEmail) :
+      DocNode(parser,parent), m_url(url), m_isEmail(isEmail) {}
+    DString url() const        { return m_url; }
+    bool isEmail() const       { return m_isEmail; }
+
+  private:
+    DString  m_url;
+    bool m_isEmail = false;
+};
+
+/** Node representing a line break */
+class DocLineBreak final : public DocNode
+{
+  public:
+    DocLineBreak(DocParser *parser,DocNodeVariant *parent) : DocNode(parser,parent) {}
+    DocLineBreak(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs)
+      : DocNode(parser,parent), m_attribs(attribs) {}
+
+    const HtmlAttribList &attribs() const { return m_attribs; }
+
+  private:
+    HtmlAttribList m_attribs;
+};
+
+/** Node representing a horizontal ruler */
+class DocHorRuler final : public DocNode
+{
+  public:
+    DocHorRuler(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs)
+      : DocNode(parser,parent), m_attribs(attribs) {}
+
+    const HtmlAttribList &attribs() const { return m_attribs; }
+
+  private:
+    HtmlAttribList m_attribs;
+};
+
+/** Node representing an anchor */
+class DocAnchor final : public DocNode
+{
+  public:
+    DocAnchor(DocParser *parser,DocNodeVariant *parent,const DString &id,bool newAnchor);
+    DString anchor() const    { return m_anchor; }
+    DString file() const      { return m_file; }
+
+    const HtmlAttribList &attribs() const { return m_attribs; }
+
+  private:
+    DString  m_anchor;
+    DString  m_file;
+    HtmlAttribList m_attribs;
+};
+
+/** Node representing a citation of some bibliographic reference */
+class DocCite final : public DocNode
+{
+  public:
+    DocCite(DocParser *parser,DocNodeVariant *parent,const DString &target,const DString &context, CiteInfoOption opt);
+    DString file() const        { return m_file; }
+    DString relPath() const     { return m_relPath; }
+    DString ref() const         { return m_ref; }
+    DString anchor() const      { return m_anchor; }
+    DString target() const      { return m_target; }
+    CiteInfoOption option() const  { return m_option; }
+    DString getText() const;
+
+  private:
+    DString   m_file;
+    DString   m_relPath;
+    DString   m_ref;
+    DString   m_anchor;
+    DString   m_target;
+    CiteInfoOption m_option;
+};
+
+
+/** Node representing a style change */
+class DocStyleChange final : public DocNode
+{
+  public:
+    enum Style { Bold          = (1<<0),
+                 Italic        = (1<<1),
+                 Code          = (1<<2),
+                 Center        = (1<<3),
+                 Small         = (1<<4),
+                 Subscript     = (1<<5),
+                 Superscript   = (1<<6),
+                 Preformatted  = (1<<7),
+                 Span          = (1<<8),
+                 Div           = (1<<9),
+                 Strike        = (1<<10),
+                 Underline     = (1<<11),
+                 Del           = (1<<12),
+                 Ins           = (1<<13),
+                 S             = (1<<14),
+                 Cite          = (1<<15),
+                 Kbd           = (1<<16),
+                 Typewriter    = (1<<17)
+               };
+
+    DocStyleChange(DocParser *parser,DocNodeVariant *parent,size_t position,Style s,
+                   const DString &tagName,bool enable, const HtmlAttribList *attribs=nullptr)
+      : DocNode(parser,parent), m_position(position), m_style(s), m_enable(enable)
+    {
+      if (attribs) m_attribs=*attribs;
+      m_tagName = tagName.lower();
+    }
+    DocStyleChange(DocParser *parser,DocNodeVariant *parent,size_t position,Style s,
+                   const DString &tagName,bool enable,
+                   const DString &fileName,int lineNr,
+                   const HtmlAttribList *attribs=nullptr)
+      : DocNode(parser,parent), m_position(position), m_style(s), m_enable(enable),
+        m_fileName(fileName), m_lineNr(lineNr)
+    {
+      if (attribs) m_attribs=*attribs;
+      m_tagName = tagName.lower();
+    }
+    Style style() const                   { return m_style; }
+    const char *styleString() const;
+    bool enable() const                   { return m_enable; }
+    size_t position() const               { return m_position; }
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    DString tagName() const               { return m_tagName; }
+    DString fileName() const              { return m_fileName; }
+    int lineNr() const                    { return m_lineNr; }
+
+  private:
+    size_t   m_position = 0;
+    Style    m_style = Bold;
+    bool     m_enable = false;
+    HtmlAttribList m_attribs;
+    DString m_tagName;
+    DString m_fileName;
+    int      m_lineNr = -1;
+};
+
+/** Node representing a special symbol */
+class DocSymbol final : public DocNode
+{
+  public:
+    DocSymbol(DocParser *parser,DocNodeVariant *parent,HtmlEntityMapper::SymType s)
+      : DocNode(parser,parent), m_symbol(s) {}
+    HtmlEntityMapper::SymType symbol() const     { return m_symbol; }
+    static HtmlEntityMapper::SymType decodeSymbol(const DString &symName);
+
+  private:
+    HtmlEntityMapper::SymType  m_symbol = HtmlEntityMapper::Sym_Unknown;
+};
+
+/** Node representing an emoji */
+class DocEmoji final : public DocNode
+{
+  public:
+    DocEmoji(DocParser *parser,DocNodeVariant *parent,const DString &symName);
+    DString name() const       { return m_symName; }
+    int index() const          { return m_index; }
+
+  private:
+    DString m_symName;
+    int m_index = 0;
+};
+
+/** Node representing some amount of white space */
+class DocWhiteSpace final : public DocNode
+{
+  public:
+    DocWhiteSpace(DocParser *parser,DocNodeVariant *parent,const DString &chars)
+      : DocNode(parser,parent), m_chars(chars) {}
+    DString chars() const { return m_chars; }
+  private:
+    DString  m_chars;
+};
+
+/** Node representing a separator */
+class DocSeparator final : public DocNode
+{
+  public:
+    DocSeparator(DocParser *parser,DocNodeVariant *parent,const DString &chars)
+      : DocNode(parser,parent), m_chars(chars) {}
+    DString chars() const { return m_chars; }
+  private:
+    DString  m_chars;
+};
+
+/** Node representing a verbatim, unparsed text fragment */
+class DocVerbatim final : public DocNode
+{
+  public:
+    enum Type { Code, HtmlOnly, ManOnly, LatexOnly, RtfOnly, XmlOnly, Verbatim, Dot, Msc, DocbookOnly, PlantUML, Mermaid, JavaDocCode, JavaDocLiteral };
+    DocVerbatim(DocParser *parser,DocNodeVariant *parent,const DString &context,
+                const DString &text, Type t,bool isExample,
+                const DString &exampleFile,bool isBlock=false,const DString &lang=DString());
+    Type type() const            { return p->type; }
+    DString text() const         { return p->text; }
+    DString context() const      { return p->context; }
+    bool isExample() const       { return p->isExample; }
+    DString exampleFile() const  { return p->exampleFile; }
+    DString relPath() const      { return p->relPath; }
+    DString language() const     { return p->lang; }
+    bool isBlock() const         { return p->isBlock; }
+    bool hasCaption() const      { return !p->children.empty(); }
+    DString width() const        { return p->width; }
+    DString height() const       { return p->height; }
+    DString engine() const       { return p->engine; }
+    bool useBitmap() const       { return p->useBitmap; }
+    const DocNodeList &children() const { return p->children; }
+    DocNodeList &children()      { return p->children; }
+    DString srcFile() const      { return p->srcFile; }
+    int srcLine() const          { return p->srcLine; }
+    void setText(const DString &t)    { p->text=t;   }
+    void setWidth(const DString &w)   { p->width=w;  }
+    void setHeight(const DString &h)  { p->height=h; }
+    void setEngine(const DString &e)  { p->engine=e; }
+    void setUseBitmap(const bool &u)  { p->useBitmap=u; }
+    void setLocation(const DString &file,int line) { p->srcFile=file; p->srcLine=line; }
+
+  private:
+    struct Private
+    {
+      Private(const DString &context_,const DString &text_, Type type_, bool isExample_,
+              const DString &exampleFile_, const DString &relPath_,const DString &lang_, bool isBlock_)
+        : context(context_),         text(text_),       type(type_),       isExample(isExample_),
+          exampleFile(exampleFile_), relPath(relPath_), lang(lang_), isBlock(isBlock_) {}
+      DString   context;
+      DString   text;
+      Type      type = Code;
+      bool      isExample;
+      DString   exampleFile;
+      DString   relPath;
+      DString   lang;
+      bool      isBlock;
+      DString   width;
+      DString   height;
+      DString   engine;
+      bool      useBitmap=false; // some PlantUML engines cannot output data in EPS format so bitmap format is required
+      DocNodeList children;
+      DString   srcFile;
+      int       srcLine = -1;
+    };
+    std::unique_ptr<Private> p;
+};
+
+
+/** Node representing an included text block from file */
+class DocInclude final : public DocNode
+{
+  public:
+  enum Type { Include, DontInclude, VerbInclude, HtmlInclude, LatexInclude,
+              IncWithLines, Snippet , SnippetWithLines,
+              DontIncWithLines, RtfInclude, ManInclude, DocbookInclude, XmlInclude
+            };
+    DocInclude(DocParser *parser,DocNodeVariant *parent,const DString &file,
+               const DString &context, Type t, bool stripCodeComments,
+               bool isExample,const DString &exampleFile,
+               const DString &blockId, bool isBlock, bool trimLeft)
+    : DocNode(parser,parent), m_file(file), m_context(context), m_type(t),
+      m_stripCodeComments(stripCodeComments),
+      m_isExample(isExample), m_isBlock(isBlock), m_trimLeft(trimLeft),
+      m_exampleFile(exampleFile), m_blockId(blockId) {}
+    DString file() const        { return m_file; }
+    DString extension() const   { size_t i=m_file.rfind('.'); return i!=DString::npos ? m_file.mid(i) : DString(); }
+    Type type() const           { return m_type; }
+    DString text() const        { return m_text; }
+    DString context() const     { return m_context; }
+    DString blockId() const     { return m_blockId; }
+    bool stripCodeComments() const { return m_stripCodeComments; }
+    bool isExample() const      { return m_isExample; }
+    DString exampleFile() const { return m_exampleFile; }
+    bool isBlock() const        { return m_isBlock; }
+    bool trimLeft() const       { return m_trimLeft; }
+    void parse();
+
+  private:
+    DString  m_file;
+    DString  m_context;
+    DString  m_text;
+    Type      m_type;
+    bool      m_stripCodeComments;
+    bool      m_isExample;
+    bool      m_isBlock;
+    bool      m_trimLeft;
+    DString  m_exampleFile;
+    DString  m_blockId;
+};
+
+/** Node representing a include/dontinclude operator block */
+class DocIncOperator final : public DocNode
+{
+  public:
+    enum Type { Line, SkipLine, Skip, Until };
+    DocIncOperator(DocParser *parser,DocNodeVariant *parent,Type t,const DString &pat,
+                   const DString &context,bool stripCodeComments,bool isExample,const DString &exampleFile)
+    : DocNode(parser,parent), m_type(t), m_pattern(pat), m_context(context),
+      m_isFirst(false), m_isLast(false), m_stripCodeComments(stripCodeComments),
+      m_isExample(isExample), m_exampleFile(exampleFile) {}
+    Type type() const           { return m_type; }
+    const char *typeAsString() const
+    {
+      switch(m_type)
+      {
+        case Line:     return "line";
+        case SkipLine: return "skipline";
+        case Skip:     return "skip";
+        case Until:    return "until";
+      }
+      return "";
+    }
+    int line() const             { return m_line; }
+    bool showLineNo() const      { return m_showLineNo; }
+    DString text() const         { return m_text; }
+    DString pattern() const      { return m_pattern; }
+    DString context() const      { return m_context; }
+    bool isFirst() const         { return m_isFirst; }
+    bool isLast() const          { return m_isLast; }
+    void markFirst(bool v=true)  { m_isFirst = v; }
+    void markLast(bool v=true)   { m_isLast = v; }
+    bool stripCodeComments() const { return m_stripCodeComments; }
+    bool isExample() const       { return m_isExample; }
+    DString exampleFile() const  { return m_exampleFile; }
+    DString includeFileName() const { return m_includeFileName; }
+    void parse();
+
+  private:
+    Type     m_type = Line;
+    int      m_line = 0;
+    bool     m_showLineNo = false;
+    DString  m_text;
+    DString  m_pattern;
+    DString  m_context;
+    bool     m_isFirst = false;
+    bool     m_isLast = false;
+    bool     m_stripCodeComments = true;
+    bool     m_isExample = false;
+    DString  m_exampleFile;
+    DString m_includeFileName;
+};
+
+/** Node representing an item of a cross-referenced list */
+class DocFormula final : public DocNode
+{
+  public:
+    DocFormula(DocParser *parser,DocNodeVariant *parent,int id);
+    DString name() const       { return m_name; }
+    DString text() const       { return m_text; }
+    DString relPath() const    { return m_relPath; }
+    int id() const             { return m_id; }
+    bool isInline() const
+    {
+      if (m_text.length()>1 && m_text.at(0)=='\\' && m_text.at(1)=='[') return false;
+      if (m_text.startsWith("\\begin{")) return false;
+      return true;
+    }
+
+  private:
+    DString  m_name;
+    DString  m_text;
+    DString  m_relPath;
+    int      m_id = 0;
+};
+
+/** Node representing an entry in the index. */
+class DocIndexEntry final : public DocNode
+{
+  public:
+    DocIndexEntry(DocParser *parser,DocNodeVariant *parent,const Definition *scope,const MemberDef *md)
+      : DocNode(parser,parent), m_scope(scope), m_member(md) {}
+    Token parse();
+    const Definition *scope() const    { return m_scope;  }
+    const MemberDef *member() const    { return m_member; }
+    DString entry() const              { return m_entry;  }
+
+  private:
+    DString     m_entry;
+    const Definition *m_scope = nullptr;
+    const MemberDef  *m_member = nullptr;
+};
+
+//-----------------------------------------------------------------------
+
+/** Node representing an auto List */
+class DocAutoList final : public DocCompoundNode
+{
+  public:
+    enum ListType
+    {
+       Unnumbered=1, Unchecked=-2, Checked_x=-3, Checked_X=-4 // positive numbers give the label
+    };
+    DocAutoList(DocParser *parser,DocNodeVariant *parent,int indent,bool isEnumList,
+                         int depth, bool isCheckedList);
+
+    bool isEnumList() const    { return m_isEnumList; }
+    int  indent() const        { return m_indent; }
+    bool isCheckedList() const { return m_isCheckedList; }
+    int depth() const          { return m_depth; }
+    Token parse();
+
+  private:
+    int      m_indent = 0;
+    bool     m_isEnumList = false;
+    bool     m_isCheckedList = false;
+    int      m_depth = 0;
+};
+
+/** Node representing an item of a auto list */
+class DocAutoListItem final : public DocCompoundNode
+{
+  public:
+    DocAutoListItem(DocParser *parser,DocNodeVariant *parent,int indent,int num);
+    int itemNumber() const     { return m_itemNum; }
+    Token parse();
+
+  private:
+    int m_indent = 0;
+    int m_itemNum = 0;
+};
+
+/** Node representing a simple section title */
+class DocTitle final : public DocCompoundNode
+{
+  public:
+    DocTitle(DocParser *parser,DocNodeVariant *parent) : DocCompoundNode(parser,parent) {}
+    void parse();
+    void parseFromString(DocNodeVariant *,const DString &title);
+    bool hasTitle() const { return !children().empty(); }
+    bool empty() const  { return !hasTitle(); }
+
+  private:
+};
+
+/** Node representing an item of a cross-referenced list */
+class DocXRefItem final : public DocCompoundNode
+{
+  public:
+    DocXRefItem(DocParser *parser,DocNodeVariant *parent,int id,const DString &key);
+    DString file() const       { return m_file; }
+    DString anchor() const     { return m_anchor; }
+    DString title() const      { return m_title; }
+    DString relPath() const    { return m_relPath; }
+    DString key() const        { return m_key; }
+    bool parse();
+
+  private:
+    int      m_id = 0;
+    DString  m_key;
+    DString  m_file;
+    DString  m_anchor;
+    DString  m_title;
+    DString  m_relPath;
+};
+
+/** Node representing an image */
+class DocImage final : public DocCompoundNode
+{
+  public:
+    enum Type { Html, Latex, Rtf, DocBook, Xml };
+    DocImage(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs,
+             const DString &name,Type t,const DString &url=DString(), bool inlineImage = true);
+    Type type() const          { return p->type; }
+    DString name() const       { return p->name; }
+    bool hasCaption() const    { return !children().empty(); }
+    DString width() const      { return p->width; }
+    DString height() const     { return p->height; }
+    DString relPath() const    { return p->relPath; }
+    DString url() const        { return p->url; }
+    bool isInlineImage() const { return p->inlineImage; }
+    bool isSVG() const;
+    const HtmlAttribList &attribs() const { return p->attribs; }
+    void parse();
+
+  private:
+    struct Private
+    {
+      Private(const HtmlAttribList &attribs_,const DString &name_,Type type_,
+              const DString &relPath_, const DString &url_,bool inlineImage_)
+        : attribs(attribs_), name(name_), type(type_),
+          relPath(relPath_), url(url_),   inlineImage(inlineImage_) {}
+      HtmlAttribList attribs;
+      DString  name;
+      Type      type = Html;
+      DString  width;
+      DString  height;
+      DString  relPath;
+      DString  url;
+      bool      inlineImage;
+    };
+    std::unique_ptr<Private> p;
+};
+
+class DocDiagramFileBase : public DocCompoundNode
+{
+  public:
+    DocDiagramFileBase(DocParser *parser, DocNodeVariant *parent,const DString &name,
+                       const DString &context, const DString &srcFile,int srcLine)
+    : DocCompoundNode(parser,parent), p(std::make_unique<Private>(name, context, srcFile, srcLine)) {}
+    DString name() const      { return p->name; }
+    DString file() const      { return p->file; }
+    DString relPath() const   { return p->relPath; }
+    bool hasCaption() const   { return !children().empty(); }
+    DString width() const     { return p->width; }
+    DString height() const    { return p->height; }
+    DString context() const   { return p->context; }
+    DString srcFile() const   { return p->srcFile; }
+    int srcLine() const       { return p->srcLine; }
+
+  protected:
+    struct Private
+    {
+      Private(const DString &name_,const DString &context_,const DString &srcFile_,int srcLine_)
+        : name(name_), context(context_), srcFile(srcFile_), srcLine(srcLine_) {}
+      DString  name;
+      DString  file;
+      DString  relPath;
+      DString  width;
+      DString  height;
+      DString  context;
+      DString  srcFile;
+      int       srcLine;
+    };
+    std::unique_ptr<Private> p;
+};
+
+/** Node representing a dot file */
+class DocDotFile final : public DocDiagramFileBase
+{
+  public:
+    DocDotFile(DocParser *parser,DocNodeVariant *parent,const DString &name,const DString &context,
+               const DString &srcFile,int srcLine);
+    bool parse();
+};
+
+/** Node representing a msc file */
+class DocMscFile final : public DocDiagramFileBase
+{
+  public:
+    DocMscFile(DocParser *parser,DocNodeVariant *parent,const DString &name,const DString &context,
+               const DString &srcFile,int srcLine);
+    bool parse();
+};
+
+/** Node representing a dia file */
+class DocDiaFile final : public DocDiagramFileBase
+{
+  public:
+    DocDiaFile(DocParser *parser,DocNodeVariant *parent,const DString &name,const DString &context,
+               const DString &srcFile,int srcLine);
+    bool parse();
+};
+
+/** Node representing a uml file */
+class DocPlantUmlFile final : public DocDiagramFileBase
+{
+  public:
+    DocPlantUmlFile(DocParser *parser,DocNodeVariant *parent,const DString &name,const DString &context,
+               const DString &srcFile,int srcLine);
+    bool parse();
+};
+
+/** Node representing a mermaid file */
+class DocMermaidFile final : public DocDiagramFileBase
+{
+  public:
+    DocMermaidFile(DocParser *parser,DocNodeVariant *parent,const DString &name,const DString &context,
+               const DString &srcFile,int srcLine);
+    bool parse();
+};
+
+/** Node representing a VHDL flow chart */
+class DocVhdlFlow final : public DocCompoundNode
+{
+  public:
+    DocVhdlFlow(DocParser *parser,DocNodeVariant *parent);
+    void parse();
+    bool hasCaption() const { return !children().empty(); }
+  private:
+};
+
+/** Node representing a link to some item */
+class DocLink final : public DocCompoundNode
+{
+  public:
+    DocLink(DocParser *parser,DocNodeVariant *parent,const DString &target);
+    DString parse(bool,bool isXmlLink=false);
+    DString file() const       { return m_file; }
+    DString relPath() const    { return m_relPath; }
+    DString ref() const        { return m_ref; }
+    DString anchor() const     { return m_anchor; }
+
+  private:
+    DString  m_file;
+    DString  m_relPath;
+    DString  m_ref;
+    DString  m_anchor;
+    DString  m_refText;
+};
+
+/** Node representing a reference to some item */
+class DocRef final : public DocCompoundNode
+{
+  public:
+    DocRef(DocParser *parser,DocNodeVariant *parent,const DString &target,const DString &context);
+    void parse(char cmdChar,const DString &cmdName);
+    DString file() const         { return m_file; }
+    DString relPath() const      { return m_relPath; }
+    DString ref() const          { return m_ref; }
+    DString anchor() const       { return m_anchor; }
+    DString targetTitle() const  { return m_text; }
+    SectionType sectionType() const { return m_sectionType; }
+    bool hasLinkText() const     { return !children().empty(); }
+    bool refToAnchor() const     { return m_refType==Anchor; }
+    bool refToSection() const    { return m_refType==Section; }
+    bool refToTable() const      { return m_refType==Table; }
+    bool isSubPage() const       { return m_isSubPage; }
+
+  private:
+    RefType    m_refType = Unknown;
+    SectionType m_sectionType = SectionType::Anchor;
+    bool       m_isSubPage = false;
+    DString   m_file;
+    DString   m_relPath;
+    DString   m_ref;
+    DString   m_anchor;
+    DString   m_text;
+};
+
+/** Node representing an internal reference to some item */
+class DocInternalRef final : public DocCompoundNode
+{
+  public:
+    DocInternalRef(DocParser *parser,DocNodeVariant *parent,const DString &target);
+    void parse();
+    DString file() const         { return m_file; }
+    DString relPath() const      { return m_relPath; }
+    DString anchor() const       { return m_anchor; }
+
+  private:
+    DString   m_file;
+    DString   m_relPath;
+    DString   m_anchor;
+};
+
+/** Node representing a Hypertext reference */
+class DocHRef final : public DocCompoundNode
+{
+  public:
+    DocHRef(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs,const DString &url,
+           const DString &relPath, const DString &file)
+    : DocCompoundNode(parser,parent), m_attribs(attribs), m_url(url),
+      m_relPath(relPath), m_file(file) {}
+    Token parse();
+    DString url() const        { return m_url; }
+    DString file() const       { return m_file; }
+    DString relPath() const    { return m_relPath; }
+    const HtmlAttribList &attribs() const { return m_attribs; }
+
+  private:
+    HtmlAttribList m_attribs;
+    DString   m_url;
+    DString   m_relPath;
+    DString   m_file;
+};
+
+/** Node Html summary */
+class DocHtmlSummary final : public DocCompoundNode
+{
+  public:
+    DocHtmlSummary(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs) :
+       DocCompoundNode(parser,parent), m_attribs(attribs) {}
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    void parse();
+
+  private:
+    HtmlAttribList m_attribs;
+};
+
+/** Node Html details */
+class DocHtmlDetails final : public DocCompoundNode
+{
+  public:
+    DocHtmlDetails(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs) :
+       DocCompoundNode(parser,parent), m_attribs(attribs) {}
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    Token parse();
+    void parseSummary(DocNodeVariant *,HtmlAttribList &attribs);
+    const DocNodeVariant *summary() const { return m_summary.get(); }
+
+  private:
+    HtmlAttribList m_attribs;
+    std::unique_ptr<DocNodeVariant> m_summary;
+};
+
+/** Node Html heading */
+class DocHtmlHeader final : public DocCompoundNode
+{
+  public:
+    DocHtmlHeader(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs,int level) :
+       DocCompoundNode(parser,parent), m_level(level), m_attribs(attribs) {}
+    int level() const                     { return m_level; }
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    Token parse();
+
+  private:
+    int           m_level = 0;
+    HtmlAttribList m_attribs;
+};
+
+/** Node representing a Html description item */
+class DocHtmlDescTitle final : public DocCompoundNode
+{
+  public:
+    DocHtmlDescTitle(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs) :
+      DocCompoundNode(parser,parent), m_attribs(attribs) {}
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    Token parse();
+
+  private:
+    HtmlAttribList m_attribs;
+};
+
+/** Node representing a Html description list */
+class DocHtmlDescList final : public DocCompoundNode
+{
+  public:
+    DocHtmlDescList(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs) :
+      DocCompoundNode(parser,parent), m_attribs(attribs) {}
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    Token parse();
+
+  private:
+    HtmlAttribList m_attribs;
+};
+
+/** Node representing a normal section */
+class DocSection final : public DocCompoundNode
+{
+  public:
+    DocSection(DocParser *parser,DocNodeVariant *parent,int level,const DString &id) :
+      DocCompoundNode(parser,parent), m_level(level), m_id(id) {}
+    int level() const          { return m_level; }
+    const DocNodeVariant *title() const { return m_title.get(); }
+    DString anchor() const     { return m_anchor; }
+    DString id() const         { return m_id; }
+    DString file() const       { return m_file; }
+    Token parse();
+
+  private:
+    int       m_level = 0;
+    DString  m_id;
+    std::unique_ptr<DocNodeVariant> m_title;
+    DString  m_anchor;
+    DString  m_file;
+};
+
+/** Node representing a reference to a section */
+class DocSecRefItem final : public DocCompoundNode
+{
+  public:
+    DocSecRefItem(DocParser *parser,DocNodeVariant *parent,const DString &target);
+    DString target() const      { return m_target; }
+    DString file() const        { return m_file; }
+    DString anchor() const      { return m_anchor; }
+    DString relPath() const     { return m_relPath; }
+    DString ref() const         { return m_ref; }
+    bool refToTable() const     { return m_refType==Table; }
+    bool isSubPage() const      { return m_isSubPage; }
+    void parse();
+
+  private:
+    DString   m_target;
+    RefType    m_refType = Unknown;
+    bool       m_isSubPage = false;
+    DString   m_file;
+    DString   m_relPath;
+    DString   m_ref;
+    DString   m_anchor;
+};
+
+/** Node representing a list of section references */
+class DocSecRefList final : public DocCompoundNode
+{
+  public:
+    DocSecRefList(DocParser *parser,DocNodeVariant *parent) : DocCompoundNode(parser,parent) {}
+    void parse();
+
+  private:
+};
+
+/** Node representing an internal section of documentation */
+class DocInternal final : public DocCompoundNode
+{
+  public:
+    DocInternal(DocParser *parser,DocNodeVariant *parent) : DocCompoundNode(parser,parent) {}
+    Token parse(int);
+
+  private:
+};
+
+/** Node representing an block of paragraphs */
+class DocParBlock final : public DocCompoundNode
+{
+  public:
+    DocParBlock(DocParser *parser,DocNodeVariant *parent) : DocCompoundNode(parser,parent) {}
+    Token parse();
+
+  private:
+};
+
+
+/** Node representing a simple list */
+class DocSimpleList final : public DocCompoundNode
+{
+  public:
+    DocSimpleList(DocParser *parser,DocNodeVariant *parent) : DocCompoundNode(parser,parent) {}
+    Token parse();
+
+  private:
+};
+
+/** Node representing a Html list */
+class DocHtmlList final : public DocCompoundNode
+{
+  public:
+    enum Type { Unordered, Ordered };
+    DocHtmlList(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs,Type t) :
+      DocCompoundNode(parser,parent), m_type(t), m_attribs(attribs) {}
+    Type type() const { return m_type; }
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    Token parse();
+    Token parseXml();
+
+  private:
+    Type           m_type = Unordered;
+    HtmlAttribList m_attribs;
+};
+
+/** Node representing a simple section */
+class DocSimpleSect final : public DocCompoundNode
+{
+  public:
+    enum Type
+    {
+       Unknown, See, Return, Author, Authors, Version, Since, Date,
+       Note, Warning, Copyright, Pre, Post, Invar, Remark, Attention, Important,
+       User, Rcs
+    };
+    DocSimpleSect(DocParser *parser,DocNodeVariant *parent,Type t);
+    Type type() const { return m_type; }
+    DString typeString() const;
+    Token parse(bool userTitle,bool needsSeparator);
+    Token parseRcs();
+    Token parseXml();
+    void appendLinkWord(const DString &word);
+    bool hasTitle() const;
+    const DocNodeVariant *title() const { return m_title.get(); }
+
+  private:
+    Type            m_type = Unknown;
+    std::unique_ptr<DocNodeVariant> m_title;
+};
+
+/** Node representing a separator between two simple sections of the
+ *  same type.
+ */
+class DocSimpleSectSep final : public DocNode
+{
+  public:
+    DocSimpleSectSep(DocParser *parser,DocNodeVariant *parent) : DocNode(parser,parent) {}
+
+  private:
+};
+
+/** Node representing a parameter section */
+class DocParamSect final : public DocCompoundNode
+{
+    friend class DocParamList;
+  public:
+    enum Type
+    {
+       Unknown, Param, RetVal, Exception, TemplateParam
+    };
+    enum Direction
+    {
+       In=1, Out=2, InOut=3, Unspecified=0
+    };
+    DocParamSect(DocParser *parser,DocNodeVariant *parent,Type t)
+      : DocCompoundNode(parser,parent), m_type(t), m_hasInOutSpecifier(false), m_hasTypeSpecifier(false)
+    {}
+    Token parse(const DString &cmdName,bool xmlContext,Direction d);
+    Type type() const              { return m_type; }
+    bool hasInOutSpecifier() const { return m_hasInOutSpecifier; }
+    bool hasTypeSpecifier() const  { return m_hasTypeSpecifier; }
+
+  private:
+    Type            m_type = Unknown;
+    bool            m_hasInOutSpecifier = false;
+    bool            m_hasTypeSpecifier = false;
+};
+
+/** Node representing a paragraph in the documentation tree */
+class DocPara final : public DocCompoundNode
+{
+  public:
+    DocPara(DocParser *parser,DocNodeVariant *parent);
+    Token parse();
+    bool empty() const          { return children().empty(); }
+    void markFirst(bool v=true) { m_isFirst=v; }
+    void markLast(bool v=true)  { m_isLast=v; }
+    bool isFirst() const        { return m_isFirst; }
+    bool isLast() const         { return m_isLast; }
+
+    Token handleCommand(char cmdChar,const DString &cmdName);
+    Token handleHtmlStartTag(const DString &tagName,const HtmlAttribList &tagHtmlAttribs);
+    Token handleHtmlEndTag(const DString &tagName);
+    Token handleSimpleSection(DocSimpleSect::Type t,bool xmlContext=false);
+    Token handleXRefItem();
+    Token handleParamSection(const DString &cmdName,DocParamSect::Type t, bool xmlContext, int direction);
+    void handleIncludeOperator(const DString &cmdName,DocIncOperator::Type t);
+    template<class T> void handleFile(const DString &cmdName);
+    void handleInclude(const DString &cmdName,DocInclude::Type t);
+    void handleLink(const DString &cmdName,bool isJavaLink);
+    void handleDoxyConfig(char cmdChar,const DString &cmdName);
+    void handleEmoji(char cmdChar,const DString &cmdName);
+    void handleSection(char cmdChar,const DString &cmdName);
+    void handleInheritDoc();
+    void handleVhdlFlow();
+    void handleShowDate(char cmdChar,const DString &cmdName);
+    Token handleStartCode();
+    Token handleHtmlHeader(const HtmlAttribList &tagHtmlAttribs,int level);
+
+    bool injectToken(Token tok,const DString &tokText);
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    void setAttribs(const HtmlAttribList &attribs) { m_attribs = attribs; }
+
+  private:
+    bool      m_isFirst = false;
+    bool      m_isLast = false;
+    HtmlAttribList m_attribs;
+};
+
+/** Node representing a parameter list. */
+class DocParamList final : public DocNode
+{
+  public:
+    DocParamList(DocParser *parser,DocNodeVariant *parent,DocParamSect::Type t,DocParamSect::Direction d)
+      : DocNode(parser,parent), m_type(t), m_dir(d) {}
+    const DocNodeList &parameters() const { return m_params; }
+    const DocNodeList &paramTypes() const { return m_paramTypes; }
+    const DocNodeList &paragraphs() const { return m_paragraphs; }
+    DocParamSect::Type type() const { return m_type; }
+    DocParamSect::Direction direction() const { return m_dir; }
+    void markFirst(bool b=true)     { m_isFirst=b; }
+    void markLast(bool b=true)      { m_isLast=b; }
+    bool isFirst() const            { return m_isFirst; }
+    bool isLast() const             { return m_isLast; }
+    Token parse(const DString &cmdName);
+    Token parseXml(const DString &paramName);
+
+  private:
+    DocNodeList             m_paragraphs;
+    DocNodeList             m_params;
+    DocNodeList             m_paramTypes;
+    DocParamSect::Type      m_type = DocParamSect::Unknown;
+    DocParamSect::Direction m_dir = DocParamSect::Unspecified;
+    bool                    m_isFirst = false;
+    bool                    m_isLast = false;
+};
+
+/** Node representing a simple list item */
+class DocSimpleListItem final : public DocNode
+{
+  public:
+    DocSimpleListItem(DocParser *parser,DocNodeVariant *parent);
+    Token parse();
+    const DocNodeVariant *paragraph() const { return m_paragraph.get(); }
+
+  private:
+    std::unique_ptr<DocNodeVariant> m_paragraph;
+};
+
+/** Node representing a HTML list item */
+class DocHtmlListItem final : public DocCompoundNode
+{
+  public:
+    DocHtmlListItem(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs,int num)
+    : DocCompoundNode(parser,parent), m_attribs(attribs), m_itemNum(num) {}
+    int itemNumber() const                { return m_itemNum; }
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    Token parse();
+    Token parseXml();
+
+  private:
+    HtmlAttribList m_attribs;
+    int            m_itemNum = 0;
+};
+
+/** Node representing a HTML description data */
+class DocHtmlDescData final : public DocCompoundNode
+{
+  public:
+    DocHtmlDescData(DocParser *parser,DocNodeVariant *parent) : DocCompoundNode(parser,parent) {}
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    Token parse();
+
+  private:
+    HtmlAttribList m_attribs;
+};
+
+/** Node representing a HTML table cell */
+class DocHtmlCell final : public DocCompoundNode
+{
+    friend class DocHtmlTable;
+  public:
+    enum Alignment { Left, Right, Center };
+    enum Valignment {Top, Middle, Bottom};
+    DocHtmlCell(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs,bool isHeading) :
+       DocCompoundNode(parser,parent), m_isHeading(isHeading), m_attribs(attribs) {}
+    bool isHeading() const      { return m_isHeading; }
+    bool isFirst() const        { return m_isFirst; }
+    bool isLast() const         { return m_isLast; }
+    void markFirst(bool v=true) { m_isFirst=v; }
+    void markLast(bool v=true)  { m_isLast=v; }
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    Token parse();
+    Token parseXml();
+    uint32_t rowIndex() const        { return m_rowIdx; }
+    uint32_t columnIndex() const     { return m_colIdx; }
+    uint32_t rowSpan() const;
+    uint32_t colSpan() const;
+    Alignment alignment() const;
+    Valignment valignment() const;
+
+  private:
+    void setRowIndex(uint32_t idx)    { m_rowIdx = idx; }
+    void setColumnIndex(uint32_t idx) { m_colIdx = idx; }
+    bool           m_isHeading = false;
+    bool           m_isFirst = false;
+    bool           m_isLast = false;
+    HtmlAttribList m_attribs;
+    uint32_t           m_rowIdx = static_cast<uint32_t>(-1);
+    uint32_t           m_colIdx = static_cast<uint32_t>(-1);
+};
+
+/** Node representing a HTML table caption */
+class DocHtmlCaption final : public DocCompoundNode
+{
+  public:
+    DocHtmlCaption(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs);
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    Token parse();
+    bool hasCaptionId() const { return m_hasCaptionId; }
+    DString file() const     { return m_file;         }
+    DString anchor() const   { return m_anchor;       }
+
+  private:
+    HtmlAttribList m_attribs;
+    bool           m_hasCaptionId = false;
+    DString       m_file;
+    DString       m_anchor;
+};
+
+/** Node representing a HTML table row */
+class DocHtmlRow final : public DocCompoundNode
+{
+    friend class DocHtmlTable;
+  public:
+    DocHtmlRow(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs)
+      : DocCompoundNode(parser,parent), m_attribs(attribs) {}
+    size_t numCells() const      { return children().size(); }
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    Token parse();
+    Token parseXml(bool header);
+    bool isHeading() const;
+    void setVisibleCells(uint32_t n) { m_visibleCells = n; }
+    uint32_t visibleCells() const    { return m_visibleCells; }
+    uint32_t rowIndex() const        { return m_rowIdx; }
+
+  private:
+    void setRowIndex(uint32_t idx)   { m_rowIdx = idx; }
+    HtmlAttribList m_attribs;
+    uint32_t m_visibleCells = 0;
+    uint32_t m_rowIdx = static_cast<uint32_t>(-1);
+};
+
+/** Node representing a HTML table */
+class DocHtmlTable final : public DocCompoundNode
+{
+  public:
+    DocHtmlTable(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs)
+      : DocCompoundNode(parser,parent), m_attribs(attribs) {}
+    size_t numRows() const  { return children().size(); }
+    bool hasCaption() const;
+    const HtmlAttribList &attribs() const { return m_attribs; }
+    Token parse();
+    Token parseXml();
+    size_t numColumns() const { return m_numCols; }
+    const DocNodeVariant *caption() const;
+    size_t numberHeaderRows() const;
+
+  private:
+    void computeTableGrid();
+    std::unique_ptr<DocNodeVariant> m_caption;
+    HtmlAttribList     m_attribs;
+    size_t m_numCols = 0;
+};
+
+/** Node representing an HTML blockquote */
+class DocHtmlBlockQuote final : public DocCompoundNode
+{
+  public:
+    DocHtmlBlockQuote(DocParser *parser,DocNodeVariant *parent,const HtmlAttribList &attribs)
+      : DocCompoundNode(parser,parent), m_attribs(attribs) {}
+    Token parse();
+    const HtmlAttribList &attribs() const { return m_attribs; }
+
+  private:
+    HtmlAttribList m_attribs;
+};
+
+/** Root node of a text fragment */
+class DocText final : public DocCompoundNode
+{
+  public:
+    DocText(DocParser *parser) : DocCompoundNode(parser,nullptr) {}
+    void parse();
+    bool empty() const { return children().empty(); }
+};
+
+/** Root node of documentation tree */
+class DocRoot final : public DocCompoundNode
+{
+  public:
+    DocRoot(DocParser *parser,bool indent,bool sl)
+      : DocCompoundNode(parser,nullptr), m_indent(indent), m_singleLine(sl) {}
+    void parse();
+    bool indent() const { return m_indent; }
+    bool singleLine() const { return m_singleLine; }
+    bool empty() const { return children().empty(); }
+
+  private:
+    bool m_indent = false;
+    bool m_singleLine = false;
+};
+
+//--------------------------------------------------------------------------------------
+
+/// returns the parent node of a given node \a n or nullptr if the node has no parent.
+constexpr DocNodeVariant *parent(DocNodeVariant *n)
+{
+  return n ? std::visit([](auto &&x)->decltype(auto) { return x.parent(); }, *n) : nullptr;
+}
+
+/// returns the parent node of a given node \a n or nullptr if the node has no parent.
+constexpr const DocNodeVariant *parent(const DocNodeVariant *n)
+{
+  return n ? std::visit([](auto &&x)->decltype(auto) { return x.parent(); }, *n) : nullptr;
+}
+
+namespace details
+{
+
+template<class T,class... Ts>
+struct Impl
+{
+  static constexpr bool holds_one_of_alternatives(const DocNodeVariant &v)
+  {
+    return std::holds_alternative<T>(v) || Impl<Ts...>::holds_one_of_alternatives(v);
+  }
+};
+
+template<class T>
+struct Impl<T>
+{
+  static constexpr bool holds_one_of_alternatives(const DocNodeVariant &v)
+  {
+    return std::holds_alternative<T>(v);
+  }
+};
+
+} // namespace details
+
+/// returns true iff \a v holds one of types passed as template parameters
+template<class... Ts>
+constexpr bool holds_one_of_alternatives(const DocNodeVariant &v)
+{
+  return details::Impl<Ts...>::holds_one_of_alternatives(v);
+}
+
+namespace details
+{
+
+// Helper type trait to check if a type has member function children(). Default case is false.
+template <typename T, typename = void>
+struct has_method_children : std::false_type {};
+
+// Use SFINAE to have a partial template specialization derived from std::true_type in case T has method children()
+template <typename T>
+struct has_method_children<T, std::void_t<decltype(std::declval<T>().children())>> : std::true_type {};
+
+} // namespace details
+
+// Call children() on variant v if the contained type has this method, otherwise return nullptr
+inline DocNodeList* call_method_children(DocNodeVariant *v)
+{
+  return std::visit([](auto&& value) -> DocNodeList* {
+    if constexpr (details::has_method_children<decltype(value)>::value) {
+      return &value.children();
+    } else {
+      return nullptr;
+    }
+  }, *v);
+}
+
+//----------------- DocNodeList ---------------------------------------
+
+template<class T,class...Args>
+inline void DocNodeList::append(Args&&... args)
+{
+  // add a DocNodeVariant to the list containing an node T as its active member.
+  emplace_back(T(std::forward<Args>(args)...));
+  // store a pointer to the variant holding node T inside the node itself.
+  // Since DocNodeList is a GrowVector this reference will remain valid even if new
+  // elements are added (which would not be the case if a std::vector was used)
+  std::get_if<T>(&back())->setThisVariant(&back());
+}
+
+template<class T>
+inline T *DocNodeList::get_last()
+{
+  return std::get_if<T>(&back());
+}
+
+// ---------------- Debug helpers -------------------------------
+
+#define DN(x)  #x
+#define DN_SEP ,
+inline const char *docNodeName(const DocNodeVariant &v)
+{
+  static const char *table[] = { DOC_NODES };
+  return table[v.index()];
+}
+#undef DN
+#undef DN_SEP
+
+inline void dumpDocNodeSizes()
+{
+#define DN(x)  #x
+#define DN_SEP ,
+  static const char *tableWithNames[] = { DOC_NODES };
+#undef DN
+#undef DN_SEP
+
+#define DN(x)  sizeof(x)
+#define DN_SEP ,
+  static size_t tableWithSizes[] = { DOC_NODES };
+#undef DN
+#undef DN_SEP
+
+  size_t maxSize=0;
+  printf("DocNodeVariant(\n");
+  for (size_t i=0;i<sizeof(tableWithNames)/sizeof(tableWithNames[0]);i++)
+  {
+    printf("  /* %2zu */ sizeof(%s)=%zu\n",i,tableWithNames[i],tableWithSizes[i]);
+    if (tableWithSizes[i]>maxSize) maxSize = tableWithSizes[i];
+  }
+  printf(")=%zu\n",maxSize);
+}
+
+inline void dumpDocNodeList(const DocNodeList &children)
+{
+  printf("children=[\n");
+  for (const auto &child : children)
+  {
+    const DocWord *w = std::get_if<DocWord>(&child);
+    printf("  %s (%p) %s\n",docNodeName(child),(void*)&child,qPrint(w?w->word():""));
+  }
+  printf("]\n");
+}
+
+//----------------------------------------------------------------------------------
+
+/** Class representing the abstract syntax tree of a documentation block */
+class DocNodeAST final: public IDocNodeAST
+{
+  public:
+    // Note that r can only be a rvalue, not a general forwarding reference.
+    // The compiler will error on lvalues because DotNodeVariant doesn't have a copy constructor
+    template<class DocNode>
+    DocNodeAST(DocNode &&r) : root(std::move(r))
+    {
+      std::get_if<DocNode>(&root)->setThisVariant(&root);
+    }
+    bool empty() const override
+    {
+      if (std::holds_alternative<DocRoot>(root))
+      {
+        return std::get<DocRoot>(root).empty();
+      }
+      else if (std::holds_alternative<DocText>(root))
+      {
+        return std::get<DocText>(root).empty();
+      }
+      else if (std::holds_alternative<DocTitle>(root))
+      {
+        return std::get<DocTitle>(root).empty();
+      }
+      return false;
+    }
+    DocNodeVariant root;
+};
+
+template<class T,class... Args>
+std::unique_ptr<DocNodeVariant> createDocNode(Args&&...args)
+{
+  auto node = std::make_unique<DocNodeVariant>(T(std::forward<Args>(args)...));
+  std::get_if<T>(node.get())->setThisVariant(node.get());
+  return node;
+}
+
+#endif

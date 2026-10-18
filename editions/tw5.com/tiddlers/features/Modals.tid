@@ -1,0 +1,47 @@
+created: 20160107225427489
+modified: 20260907204047567
+tags: Features
+title: Modals
+type: text/vnd.tiddlywiki
+
+Modals (or "wizards") fade the main TiddlyWiki window to display an isolated tiddler that must be explicitly dismissed by the user.
+
+The tiddler to be displayed can contain the following optional fields that are used to customise the modal:
+
+|!Field |!Description |
+|footer|The footer text for the modal|
+|subtitle|The subtitle text for a modal, displayed in a `h3` html tag|
+|class|An additional class to apply to the modal wrapper|
+|help|An optional external link that will be displayed at the left of the footer with the text "Help"|
+|mask-closable|When set to ''yes'' or ''true'', will close the modal dialog when the mask (area outside the modal) is clicked|
+
+Note that the footer and subtitle fields are not limited to plain text, and wiki text features such as widgets and transclusions can be used as well.
+
+Modals are displayed with the [[WidgetMessage: tm-modal]].
+
+<<.tip """<$macrocall $name=".from-version" version="5.2.4"/> allow using "mask-closable" field""">>
+
+!! Examples
+
+<<wikitext-example-without-html """<$button message="tm-modal" param="SampleWizard">Open demo modal</$button>""">>
+
+<<.from-version "5.5.0">> you can use the template <<.tid $:/core/templates/rendered-text>> to display a modal if you do not want to create a separate tiddler:
+
+<<wikitext-example-without-html """\procedure text()
+<style class="headless-modal">
+.tc-modal:has(.tc-modal-body .headless-modal) .tc-modal-header{display:none}
+</style>
+
+!! Motovun Jack
+
+{{Motovun Jack.jpg}}
+
+
+<$button message="tm-modal" param="SampleWizard">Open nested modal</$button>
+
+\end
+
+<$button>
+<$action-sendmessage $message="tm-modal" $param="$:/core/templates/rendered-text" text=<<text>>/>
+Click me!
+</$button>""">>

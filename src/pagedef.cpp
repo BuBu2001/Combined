@@ -1,0 +1,665 @@
+/******************************************************************************
+ *
+ * Copyright (C) 1997-2015 by Dimitri van Heesch.
+ *
+ * Permission to use, copy, modify, and distribute this software and its
+ * documentation under the terms of the GNU General Public License is hereby
+ * granted. No representations are made about the suitability of this software
+ * for any purpose. It is provided "as is" without express or implied warranty.
+ * See the GNU General Public License for more details.
+ *
+ * Documents produced by Doxygen are derivative works derived from the
+ * input used in their production; they are not affected by this license.
+ *
+ */
+
+// own header
+#include "pagedef.h"
+
+// other includes
+#include "config.h"
+#include "definitionimpl.h"
+#include "docparser.h"
+#include "doxygen.h"
+#include "entry.h"
+#include "groupdef.h"
+#include "indexlist.h"
+#include "language.h"
+#include "message.h"
+#include "namespacedef.h"
+#include "outputlist.h"
+#include "reflist.h"
+#include "util.h"
+
+//------------------------------------------------------------------------------------------
+
+class PageDefImpl final : public DefinitionMixin<PageDef>
+{
+  public:
+    PageDefImpl(const DString &f,int l,const DString &n,const DString &d,const DString &t);
+    ~PageDefImpl() override;
+    NON_COPYABLE(PageDefImpl)
+
+    void setFileName(const DString &name) override;
+    void setLocalToc(const LocalToc &tl) override;
+    void setShowLineNo(bool) override;
+    DefType definitionType() const override { return TypePage; }
+    CodeSymbolType codeSymbolType() const override { return CodeSymbolType::Default; }
+    bool isLinkableInProject() const override { return /*hasDocumentation() &&*/ !isReference(); }
+    bool isLinkable() const override { return isLinkableInProject() || isReference(); }
+    DString getOutputFileBase() const override;
+    DString anchor() const override { return DString(); }
+    void findSectionsInDocumentation() override;
+    DString title() const override { return m_title; }
+    DString titleAsText() const override;
+    const GroupDef * getGroupDef() const override;
+    const PageLinkedRefMap &getSubPages() const override { return m_subPages; }
+    void addInnerCompound(Definition *d) override;
+    bool visibleInIndex() const override;
+    bool documentedPage() const override;
+    bool hasSubPages() const override;
+    bool hasParentPage() const override;
+    bool hasTitle() const override;
+    LocalToc localToc() const override { return m_localToc; }
+    void setPageScope(Definition *d) override { m_pageScope = d; }
+    Definition *getPageScope() const override { return m_pageScope; }
+    DString displayName(bool=true) const override { return hasTitle() ? m_title : DefinitionMixin::name(); }
+    bool showLineNo() const override;
+    void setTitle(const DString &title) override;
+    void writeDocumentation(OutputList &ol) override;
+    void writeTagFile(TextStream &) override;
+    void setNestingLevel(int l) override;
+    void writePageDocumentation(OutputList &ol) const override;
+    void addSectionsToIndex() override;
+    void writePageNavigation(OutputList &ol) const override;
+    void addListReferences() override;
+    void addRequirementReferences() override;
+
+  private:
+    DString m_fileName;
+    DString m_title;
+    DString m_titleAsText;
+    PageLinkedRefMap m_subPages;                 // list of pages in the group
+    Definition *m_pageScope;
+    int m_nestingLevel;
+    LocalToc m_localToc;
+    bool m_showLineNo;
+};
+
+std::unique_ptr<PageDef> createPageDef(const DString &f,int l,const DString &n,const DString &d,const DString &t)
+{
+  return std::make_unique<PageDefImpl>(f,l,n,d,t);
+}
+
+//------------------------------------------------------------------------------------------
+
+PageDefImpl::PageDefImpl(const DString &f,int l,const DString &n,
+                 const DString &d,const DString &t)
+ : DefinitionMixin(f,l,1,n)
+{
+  setDocumentation(d,f,l);
+  m_pageScope = nullptr;
+  m_nestingLevel = 0;
+  m_fileName = ::convertNameToFile(n,false,true);
+  m_showLineNo = false;
+  setTitle(t);
+}
+
+PageDefImpl::~PageDefImpl()
+{
+}
+
+void PageDefImpl::findSectionsInDocumentation()
+{
+  docFindSections(briefDescription(),this,docFile());
+  docFindSections(documentation(),this,docFile());
+  docFindSections(inbodyDocumentation(),this,docFile());
+}
+
+const GroupDef *PageDefImpl::getGroupDef() const
+{
+  return !partOfGroups().empty() ? partOfGroups().front() : nullptr;
+}
+
+DString PageDefImpl::getOutputFileBase() const
+{
+  if (getGroupDef())
+    return getGroupDef()->getOutputFileBase();
+  else
+    return m_fileName;
+}
+
+void PageDefImpl::setFileName(const DString &name)
+{
+  m_fileName = name;
+}
+
+void PageDefImpl::addInnerCompound(Definition *def)
+{
+  if (def->definitionType()==Definition::TypePage)
+  {
+    PageDef *pd = toPageDef(def);
+    if (pd)
+    {
+      m_subPages.add(pd->name(),pd);
+      pd->setOuterScope(this);
+      if (this==Doxygen::mainPage.get())
+      {
+        pd->setNestingLevel(m_nestingLevel);
+      }
+      else
+      {
+        pd->setNestingLevel(m_nestingLevel+1);
+      }
+    }
+  }
+}
+
+void PageDefImpl::addSectionsToIndex()
+{
+  const SectionRefs &sectionRefs = getSectionRefs();
+  if (sectionRefs.empty()) return;
+  //printf("PageDefImpl::addSectionsToIndex()\n");
+  int level=1;
+  for (auto it = sectionRefs.begin(); it!=sectionRefs.end(); ++it)
+  {
+    const SectionInfo *si = *it;
+    SectionType type = si->type();
+    if (type.isSection())
+    {
+      //printf("  level=%d title=%s\n",level,qPrint(si->title));
+      int nextLevel = type.level();
+      if (nextLevel>level)
+      {
+        for (int i=level;i<nextLevel;i++)
+        {
+          Doxygen::indexList->incContentsDepth();
+        }
+      }
+      else if (nextLevel<level)
+      {
+        for (int i=nextLevel;i<level;i++)
+        {
+          Doxygen::indexList->decContentsDepth();
+        }
+      }
+      DString title = si->title();
+      if (title.empty()) title = si->label();
+      title = parseCommentAsText(this,nullptr,title,si->fileName(),si->lineNr());
+      DString titleAsHtml = parseCommentAsHtml(this,nullptr,si->title(),si->fileName(),si->lineNr());
+      // determine if there is a next level inside this item, but be aware of the anchor and table section references.
+      auto it_next = std::next(it);
+      bool isDir = (it_next!=sectionRefs.end()) ?  ((*it_next)->type().isSection() && (*it_next)->type().level() > nextLevel) : false;
+      Doxygen::indexList->addContentsItem(isDir,               // isDir
+                                          title,               // name
+                                          getReference(),      // ref
+                                          getOutputFileBase(), // file
+                                          si->label(),         // anchor
+                                          false,               // separateIndex
+                                          true,                // addToNavIndex
+                                          nullptr,             // def
+                                          titleAsHtml);        // nameAsHtml
+      level = nextLevel;
+    }
+  }
+  while (level>1)
+  {
+    Doxygen::indexList->decContentsDepth();
+    level--;
+  }
+}
+
+void PageDefImpl::addListReferences()
+{
+  DString name = getOutputFileBase();
+  if (getGroupDef())
+  {
+    name = getGroupDef()->getOutputFileBase();
+  }
+  addRefItem(xrefListItems(),name,
+             theTranslator->trPage(true,true),
+             name,title(),DString(),nullptr);
+}
+
+void PageDefImpl::addRequirementReferences()
+{
+  RequirementManager::instance().addRequirementRefsForSymbol(this);
+}
+
+bool PageDefImpl::hasParentPage() const
+{
+  return getOuterScope() &&
+         getOuterScope()->definitionType()==Definition::TypePage;
+}
+
+void PageDefImpl::writeTagFile(TextStream &tagFile)
+{
+  bool found = name()=="citelist" || name()=="requirements";
+  for (RefListManager::Ptr &rl : RefListManager::instance())
+  {
+    if (rl->listName()==name())
+    {
+      found=true;
+      break;
+    }
+  }
+  if (!found) // not one of the generated related pages
+  {
+    DString fn = getOutputFileBase();
+    addHtmlExtensionIfMissing(fn);
+    tagFile << "  <compound kind=\"page\">\n";
+    tagFile << "    <name>" << name() << "</name>\n";
+    tagFile << "    <title>" << convertToXML(title()) << "</title>\n";
+    tagFile << "    <filename>" << fn << "</filename>\n";
+    for (const auto &subPage : m_subPages)
+    {
+      DString sfn = subPage->getOutputFileBase();
+      addHtmlExtensionIfMissing(sfn);
+      tagFile << "    <subpage>" << sfn << "</subpage>\n";
+    }
+    writeDocAnchorsToTagFile(tagFile);
+    tagFile << "  </compound>\n";
+  }
+}
+
+void PageDefImpl::writeDocumentation(OutputList &ol)
+{
+  bool generateTreeView = Config_getBool(GENERATE_TREEVIEW);
+  int hierarchyLevel = -1; // Pages start at the root
+  PageDef *pd = this;
+  while (pd && pd->hasParentPage())
+  {
+    pd = dynamic_cast<PageDef *>(pd->getOuterScope());
+    ++hierarchyLevel;
+  }
+
+  //outputList->disable(OutputType::Man);
+  DString pageName,manPageName;
+  pageName    = escapeCharsInString(name(),false,true);
+  manPageName = escapeCharsInString(name(),true,true);
+
+  //printf("PageDefImpl::writeDocumentation: %s\n",getOutputFileBase().data());
+
+  ol.pushGeneratorState();
+  //1.{
+
+  ol.pushGeneratorState();
+  //2.{
+  ol.disableAllBut(OutputType::Man);
+  startFile(ol,getOutputFileBase(),false,manPageName,titleAsText(),HighlightedItem::Pages,!generateTreeView,
+            DString() /* altSidebarName */, hierarchyLevel);
+  ol.enableAll();
+  ol.disable(OutputType::Man);
+  startFile(ol,getOutputFileBase(),false,pageName,titleAsText(),HighlightedItem::Pages,!generateTreeView,
+            DString() /* altSidebarName */, hierarchyLevel);
+  ol.popGeneratorState();
+  //2.}
+
+  if (!generateTreeView)
+  {
+    if (getOuterScope()!=Doxygen::globalScope && !Config_getBool(DISABLE_INDEX))
+    {
+      DefinitionMutable *outerScope = toDefinitionMutable(getOuterScope());
+      if (outerScope)
+      {
+        outerScope->writeNavigationPath(ol);
+      }
+    }
+    ol.endQuickIndices();
+  }
+  const SectionInfo *si=SectionManager::instance().find(name());
+
+  // save old generator state and write title only to Man generator
+  ol.pushGeneratorState();
+  //2.{
+  ol.disableAllBut(OutputType::Man);
+  ol.startTitleHead(manPageName);
+  ol.endTitleHead(manPageName, manPageName);
+  if (si)
+  {
+    ol.writeString(" - ");
+
+    if (si->title() != manPageName)
+    {
+      ol.generateDoc(docFile(),
+                     getStartBodyLine(),
+                     this,
+                     nullptr,
+                     si->title(),
+                     DocOptions()
+                     .setSingleLine(true)
+                     .setAutolinkSupport(false));
+      ol.endSection(si->label(),si->type());
+    }
+  }
+  ol.popGeneratorState();
+  //2.}
+
+  ol.pushGeneratorState();
+  //2.{
+  ol.disable(OutputType::Man);
+  DString title;
+  if (this == Doxygen::mainPage.get() && !hasTitle())
+    title = theTranslator->trMainPage();
+  else
+    title = m_title;
+
+  if (!title.empty() && !name().empty() && si!=nullptr)
+  {
+    ol.startPageDoc(si->title());
+    ol.startHeaderSection();
+    ol.startTitleHead(getOutputFileBase());
+    ol.generateDoc(docFile(),
+                   getStartBodyLine(),
+                   this,
+                   nullptr,
+                   title,
+                   DocOptions()
+                   .setIndexWords(true)
+                   .setSingleLine(true)
+                   .setAutolinkSupport(false));
+    ol.endTitleHead(getOutputFileBase(),title);
+    ol.endHeaderSection();
+  }
+  else
+  {
+    ol.startPageDoc("");
+  }
+  ol.popGeneratorState();
+  //2.}
+
+  bool pageWithSections = hasSections();
+  ol.startContents();
+  if ((m_localToc.isHtmlEnabled() || m_localToc.isLatexEnabled() || m_localToc.isDocbookEnabled())
+    && pageWithSections)
+  {
+    writeToc(ol, m_localToc);
+  }
+
+  writePageDocumentation(ol);
+  ol.endContents();
+  ol.endPageDoc();
+
+  if (generateTreeView && getOuterScope()!=Doxygen::globalScope && !Config_getBool(DISABLE_INDEX))
+  {
+    endFileWithNavPath(ol,toDefinitionMutable(const_cast<Definition*>(getOuterScope())));
+  }
+  else
+  {
+    if (generateTreeView && Config_getBool(PAGE_OUTLINE_PANEL) && pageWithSections)
+    {
+      ol.pushGeneratorState();
+      ol.disableAllBut(OutputType::Html);
+      ol.writeString("</div><!-- doc-content -->\n");
+      writePageNavigation(ol);
+      ol.writeString("</div><!-- container -->\n");
+      ol.popGeneratorState();
+      endFile(ol,true);
+    }
+    else
+    {
+      endFile(ol,false,true);
+    }
+  }
+
+  ol.popGeneratorState();
+  //1.}
+}
+
+void PageDefImpl::writePageDocumentation(OutputList &ol) const
+{
+  ol.startTextBlock();
+  DString docStr = (briefDescription().empty()?"":briefDescription()+"\n\n")+documentation()+inbodyDocumentation();
+  if (hasBriefDescription() && !SectionManager::instance().find(name()))
+  {
+    ol.pushGeneratorState();
+    ol.disableAllBut(OutputType::Man);
+    ol.writeString(" - ");
+    ol.popGeneratorState();
+  }
+  ol.generateDoc(
+      docFile(),           // fileName
+      docLine(),           // startLine
+      this,                // context
+      nullptr,             // memberdef
+      docStr,              // docStr
+      DocOptions()
+      .setIndexWords(true));
+  ol.endTextBlock();
+
+  if (hasSubPages())
+  {
+    // for printed documentation we write subpages as section's of the
+    // parent page.
+    ol.pushGeneratorState();
+    ol.disableAll();
+    ol.enable(OutputType::Latex);
+    ol.enable(OutputType::Docbook);
+    ol.enable(OutputType::RTF);
+
+    for (const auto &subPage : m_subPages)
+    {
+      ol.writePageLink(subPage->getOutputFileBase(), false);
+    }
+
+    ol.popGeneratorState();
+  }
+
+  if (hasRequirementRefs()) writeRequirementRefs(ol);
+}
+
+void PageDefImpl::writePageNavigation(OutputList &ol) const
+{
+  ol.writePageOutline();
+}
+
+bool PageDefImpl::visibleInIndex() const
+{
+  bool externalPages = Config_getBool(EXTERNAL_PAGES);
+  return // not part of a group
+         !getGroupDef() &&
+         // not an externally defined page
+         (!isReference() || externalPages);
+}
+
+bool PageDefImpl::documentedPage() const
+{
+   return // not part of a group
+          !getGroupDef() &&
+          // not an externally defined page
+          !isReference();
+}
+
+bool PageDefImpl::hasSubPages() const
+{
+  return !m_subPages.empty();
+}
+
+void PageDefImpl::setNestingLevel(int l)
+{
+  m_nestingLevel = l;
+}
+
+void PageDefImpl::setLocalToc(const LocalToc &lt)
+{
+  m_localToc = lt;
+}
+
+void PageDefImpl::setShowLineNo(bool b)
+{
+  m_showLineNo = b;
+}
+
+bool PageDefImpl::showLineNo() const
+{
+  return m_showLineNo;
+}
+
+bool PageDefImpl::hasTitle() const
+{
+  return !m_title.empty() && m_title.lower()!="notitle";
+}
+
+void PageDefImpl::setTitle(const DString &title)
+{
+  if (!title.empty())
+  {
+    m_title = title;
+    m_titleAsText = parseCommentAsText(this,nullptr,title,docFile(),docLine());
+  }
+  else
+  {
+    m_title = name();
+    m_titleAsText = m_title;
+  }
+}
+
+DString PageDefImpl::titleAsText() const
+{
+  return m_titleAsText;
+}
+
+// ----------------------
+
+PageDef *addRelatedPage(const DString &name,const DString &ptitle,
+    const DString &doc,
+    const DString &fileName,
+    int docLine,
+    int startLine,
+    const RefItemVector &sli,
+    GroupDef *gd,
+    const TagInfo *tagInfo,
+    bool xref,
+    SrcLangExt lang
+    )
+{
+  PageDef *pd=nullptr;
+  //printf("addRelatedPage(name=%s gd=%p)\n",qPrint(name),gd);
+  DString title=ptitle.stripWhiteSpace();
+  bool newPage = true;
+  if ((pd=Doxygen::pageLinkedMap->find(name)) && !pd->isReference())
+  {
+    if (!xref && !title.empty() && pd->title()!=pd->name() && pd->title()!=title)
+    {
+      warn(fileName,startLine,"multiple use of page label '{}' with different titles, (other occurrence: {}, line: {})",
+         name,pd->docFile(),pd->getStartBodyLine());
+    }
+    if (!title.empty() && pd->title()==pd->name()) // pd has no real title yet
+    {
+      pd->setTitle(title);
+      SectionInfo *si = SectionManager::instance().find(pd->name());
+      if (si)
+      {
+        si->setTitle(title);
+      }
+    }
+    // append documentation block to the page.
+    pd->setDocumentation(doc,fileName,docLine);
+    //printf("Adding page docs '%s' pi=%p name=%s\n",qPrint(doc),pd,name);
+    // append (x)refitems to the page.
+    pd->setRefItems(sli);
+    newPage = false;
+  }
+
+  if (newPage) // new page
+  {
+    DString baseName=name;
+    if (baseName.endsWith(".tex"))
+      baseName=baseName.left(baseName.length()-4);
+    else if (baseName.right(Doxygen::htmlFileExtension.length())==Doxygen::htmlFileExtension)
+      baseName=baseName.left(baseName.length()-Doxygen::htmlFileExtension.length());
+
+    //printf("Appending page '%s'\n",qPrint(baseName));
+    if (pd) // replace existing page
+    {
+      pd->setDocumentation(doc,fileName,docLine);
+      pd->setFileName(::convertNameToFile(baseName,false,true));
+      pd->setShowLineNo(false);
+      pd->setNestingLevel(0);
+      pd->setPageScope(nullptr);
+      pd->setTitle(title);
+      pd->setReference(DString());
+    }
+    else // newPage
+    {
+      pd = Doxygen::pageLinkedMap->add(baseName,
+             createPageDef(fileName,docLine,baseName,doc,title));
+    }
+    pd->setBodySegment(startLine,startLine,-1);
+
+    pd->setRefItems(sli);
+    pd->setLanguage(lang);
+
+    if (tagInfo)
+    {
+      pd->setReference(tagInfo->tagName);
+      pd->setFileName(tagInfo->fileName);
+    }
+
+    if (gd) gd->addPage(pd);
+
+    if (pd->hasTitle())
+    {
+      //outputList->writeTitle(pi->name,pi->title);
+
+      // a page name is a label as well!
+      DString file;
+      DString orgFile;
+      int line  = -1;
+      if (gd)
+      {
+        file=gd->getOutputFileBase();
+        orgFile=gd->getOutputFileBase();
+      }
+      else
+      {
+        file=pd->getOutputFileBase();
+        orgFile=pd->docFile();
+        line = pd->getStartBodyLine();
+      }
+      const SectionInfo *si = SectionManager::instance().find(pd->name());
+      if (si)
+      {
+        if (!si->ref().empty()) // we are from a tag file
+        {
+          SectionManager::instance().replace(pd->name(),
+              file,-1,pd->title(),SectionType::Page,0,pd->getReference());
+        }
+        else if (si->lineNr() != -1)
+        {
+          warn(orgFile,line,"multiple use of section label '{}', (first occurrence: {}, line {})",pd->name(),si->fileName(),si->lineNr());
+        }
+        else
+        {
+          warn(orgFile,line,"multiple use of section label '{}', (first occurrence: {})",pd->name(),si->fileName());
+        }
+      }
+      else
+      {
+        SectionManager::instance().add(pd->name(),
+            file,-1,pd->title(),SectionType::Page,0,pd->getReference());
+        //printf("si->label='%s' si->definition=%s si->fileName='%s'\n",
+        //      qPrint(si->label),si->definition?si->definition->name().data():"<none>",
+        //      qPrint(si->fileName));
+        //printf("  SectionInfo: sec=%p sec->fileName=%s\n",si,qPrint(si->fileName));
+        //printf("Adding section key=%s si->fileName=%s\n",qPrint(pageName),qPrint(si->fileName));
+      }
+    }
+  }
+  return pd;
+}
+
+
+
+// --- Cast functions
+
+PageDef *toPageDef(Definition *d)
+{
+  return (d && typeid(*d) == typeid(PageDefImpl)) ? static_cast<PageDef*>(d) : nullptr;
+}
+
+const PageDef *toPageDef(const Definition *d)
+{
+  return (d && typeid(*d) == typeid(PageDefImpl)) ? static_cast<const PageDef*>(d) : nullptr;
+}
+
